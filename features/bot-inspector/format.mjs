@@ -341,3 +341,148 @@ export function panelState(roster, now = Date.now(), timeZone, fallbackId) {
     connection: buildConnectionFields(row),
   };
 }
+
+// --- Cross-bot status strip (read-only) ---
+
+export const STRIP_PREVIEW_MAX = 80;
+export const CLASS_ORDER = { waiting: 0, running: 1, retrying: 1, idle: 2 };
+export const ACTIVITY_KIND_LABELS = {
+  tool: '执行工具',
+  thinking: '思考中',
+  reasoning: '思考中',
+  composing: '撰写中',
+  writing: '撰写中',
+  responding: '回复中',
+  searching: '搜索中',
+  waiting: '等待中',
+};
+
+function rowValues(container) {
+  if (!container || typeof container !== 'object') return [];
+  try {
+    if (typeof container.values === 'function' && typeof container.get === 'function') {
+      return Array.from(container.values());
+    }
+  } catch {
+    return [];
+  }
+  if (Array.isArray(container)) return container.slice();
+  try {
+    return Object.values(container);
+  } catch {
+    return [];
+  }
+}
+
+function rowId(row) {
+  return row && typeof row.id === 'string' ? row.id : '';
+}
+
+export function allRows(roster) {
+  if (!roster || typeof roster !== 'object') return [];
+  let list = rowValues(roster.agentsById);
+  if (!list.some((r) => r && typeof r === 'object')) {
+    const refs = Array.isArray(roster.rows) ? roster.rows : [];
+    list = refs.map((ref) => {
+      if (typeof ref === 'string') return getAgent(roster.agentsById, ref);
+      if (!ref || typeof ref !== 'object') return null;
+      return getAgent(roster.agentsById, rowId(ref)) || ref;
+    });
+  }
+  const out = [];
+  const seen = new Set();
+  for (const row of list) {
+    if (!row || typeof row !== 'object' || Array.isArray(row)) continue;
+    const id = rowId(row);
+    const key = id || row;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(row);
+  }
+  return out;
+}
+
+export function classify(row) {
+  if (!row || typeof row !== 'object') return 'idle';
+  if (row.awaitingUserResponse || row.boxHandoff) return 'waiting';
+  if (row.isRetrying) return 'retrying';
+  if (row.isRunning || row.isRunningTurn || row.isComposingMessage) return 'running';
+  return 'idle';
+}
+
+export function activityLabel(row) {
+  const act = activityOf(row);
+  if (!act) return '';
+  const kind = typeof act.kind === 'string' ? act.kind.trim() : '';
+  const tool = typeof act.tool === 'string' ? act.tool.trim() : '';
+  const kindLabel = kind ? (ACTIVITY_KIND_LABELS[kind] || kind) : (tool ? ACTIVITY_KIND_LABELS.tool : '');
+  if (kindLabel && tool) return `${kindLabel} · ${tool}`;
+  return kindLabel || tool;
+}
+
+function activityTime(row) {
+  if (!row || typeof row !== 'object') return 0;
+  for (const key of ['lastActivityAt', 'localActivityAt', 'updatedAt']) {
+    if (isValidTime(row[key])) return Number(row[key]);
+  }
+  return 0;
+}
+
+function unreadOf(row) {
+  if (!row || typeof row !== 'object') return 0;
+  const n = row.unreadCount;
+  if (typeof n === 'number' && Number.isFinite(n) && n > 0) return Math.floor(n);
+  return 0;
+}
+
+export function oneLine(value, max = STRIP_PREVIEW_MAX) {
+  if (typeof value !== 'string') return '';
+  const s = value.replace(/\s+/g, ' ').trim();
+  if (s.length <= max) return s;
+  return s.slice(0, max) + '…';
+}
+
+export function rowSummary(row, now = Date.now(), _timeZone) {
+  const at = activityTime(row);
+  const relative = at ? formatRelative(at, now) : '';
+  return {
+    id: rowId(row),
+    name: botTitle(row) || '未命名',
+    status: runningStatus(row),
+    cls: classify(row),
+    activity: activityLabel(row),
+    unread: unreadOf(row),
+    hasUnread: unreadOf(row) > 0 || !!(row && row.hasUnread === true),
+    preview: oneLine(row && row.lastMessagePreview),
+    relative: relative === MISSING ? '' : relative,
+    at,
+    retrying: !!(row && row.isRetrying),
+    boxHandoff: !!(row && row.boxHandoff),
+  };
+}
+
+export function compareSummaries(a, b) {
+  const d = (CLASS_ORDER[a.cls] ?? 3) - (CLASS_ORDER[b.cls] ?? 3);
+  if (d) return d;
+  if (b.at !== a.at) return b.at - a.at;
+  return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+}
+
+export function emptyCounts() {
+  return { total: 0, running: 0, waiting: 0, idle: 0, unread: 0 };
+}
+
+export function stripState(roster, now = Date.now(), timeZone, fallbackId) {
+  if (!isRoster(roster)) return { kind: 'no-roster', selectedId: '', counts: emptyCounts(), rows: [] };
+  const rows = allRows(roster).map((row) => rowSummary(row, now, timeZone));
+  rows.sort(compareSummaries);
+  const counts = emptyCounts();
+  for (const r of rows) {
+    counts.total += 1;
+    if (r.cls === 'waiting') counts.waiting += 1;
+    else if (r.cls === 'running' || r.cls === 'retrying') counts.running += 1;
+    else counts.idle += 1;
+    counts.unread += r.unread;
+  }
+  return { kind: 'ok', selectedId: resolveSelectedId(roster, fallbackId), counts, rows };
+}

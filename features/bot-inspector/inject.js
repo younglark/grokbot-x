@@ -340,46 +340,216 @@ function panelState(roster, now = Date.now(), timeZone, fallbackId) {
     connection: buildConnectionFields(row),
   };
 }
+
+// --- Cross-bot status strip (read-only) ---
+
+const STRIP_PREVIEW_MAX = 80;
+const CLASS_ORDER = { waiting: 0, running: 1, retrying: 1, idle: 2 };
+const ACTIVITY_KIND_LABELS = {
+  tool: '执行工具',
+  thinking: '思考中',
+  reasoning: '思考中',
+  composing: '撰写中',
+  writing: '撰写中',
+  responding: '回复中',
+  searching: '搜索中',
+  waiting: '等待中',
+};
+
+function rowValues(container) {
+  if (!container || typeof container !== 'object') return [];
+  try {
+    if (typeof container.values === 'function' && typeof container.get === 'function') {
+      return Array.from(container.values());
+    }
+  } catch {
+    return [];
+  }
+  if (Array.isArray(container)) return container.slice();
+  try {
+    return Object.values(container);
+  } catch {
+    return [];
+  }
+}
+
+function rowId(row) {
+  return row && typeof row.id === 'string' ? row.id : '';
+}
+
+function allRows(roster) {
+  if (!roster || typeof roster !== 'object') return [];
+  let list = rowValues(roster.agentsById);
+  if (!list.some((r) => r && typeof r === 'object')) {
+    const refs = Array.isArray(roster.rows) ? roster.rows : [];
+    list = refs.map((ref) => {
+      if (typeof ref === 'string') return getAgent(roster.agentsById, ref);
+      if (!ref || typeof ref !== 'object') return null;
+      return getAgent(roster.agentsById, rowId(ref)) || ref;
+    });
+  }
+  const out = [];
+  const seen = new Set();
+  for (const row of list) {
+    if (!row || typeof row !== 'object' || Array.isArray(row)) continue;
+    const id = rowId(row);
+    const key = id || row;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(row);
+  }
+  return out;
+}
+
+function classify(row) {
+  if (!row || typeof row !== 'object') return 'idle';
+  if (row.awaitingUserResponse || row.boxHandoff) return 'waiting';
+  if (row.isRetrying) return 'retrying';
+  if (row.isRunning || row.isRunningTurn || row.isComposingMessage) return 'running';
+  return 'idle';
+}
+
+function activityLabel(row) {
+  const act = activityOf(row);
+  if (!act) return '';
+  const kind = typeof act.kind === 'string' ? act.kind.trim() : '';
+  const tool = typeof act.tool === 'string' ? act.tool.trim() : '';
+  const kindLabel = kind ? (ACTIVITY_KIND_LABELS[kind] || kind) : (tool ? ACTIVITY_KIND_LABELS.tool : '');
+  if (kindLabel && tool) return `${kindLabel} · ${tool}`;
+  return kindLabel || tool;
+}
+
+function activityTime(row) {
+  if (!row || typeof row !== 'object') return 0;
+  for (const key of ['lastActivityAt', 'localActivityAt', 'updatedAt']) {
+    if (isValidTime(row[key])) return Number(row[key]);
+  }
+  return 0;
+}
+
+function unreadOf(row) {
+  if (!row || typeof row !== 'object') return 0;
+  const n = row.unreadCount;
+  if (typeof n === 'number' && Number.isFinite(n) && n > 0) return Math.floor(n);
+  return 0;
+}
+
+function oneLine(value, max = STRIP_PREVIEW_MAX) {
+  if (typeof value !== 'string') return '';
+  const s = value.replace(/\s+/g, ' ').trim();
+  if (s.length <= max) return s;
+  return s.slice(0, max) + '…';
+}
+
+function rowSummary(row, now = Date.now(), _timeZone) {
+  const at = activityTime(row);
+  const relative = at ? formatRelative(at, now) : '';
+  return {
+    id: rowId(row),
+    name: botTitle(row) || '未命名',
+    status: runningStatus(row),
+    cls: classify(row),
+    activity: activityLabel(row),
+    unread: unreadOf(row),
+    hasUnread: unreadOf(row) > 0 || !!(row && row.hasUnread === true),
+    preview: oneLine(row && row.lastMessagePreview),
+    relative: relative === MISSING ? '' : relative,
+    at,
+    retrying: !!(row && row.isRetrying),
+    boxHandoff: !!(row && row.boxHandoff),
+  };
+}
+
+function compareSummaries(a, b) {
+  const d = (CLASS_ORDER[a.cls] ?? 3) - (CLASS_ORDER[b.cls] ?? 3);
+  if (d) return d;
+  if (b.at !== a.at) return b.at - a.at;
+  return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+}
+
+function emptyCounts() {
+  return { total: 0, running: 0, waiting: 0, idle: 0, unread: 0 };
+}
+
+function stripState(roster, now = Date.now(), timeZone, fallbackId) {
+  if (!isRoster(roster)) return { kind: 'no-roster', selectedId: '', counts: emptyCounts(), rows: [] };
+  const rows = allRows(roster).map((row) => rowSummary(row, now, timeZone));
+  rows.sort(compareSummaries);
+  const counts = emptyCounts();
+  for (const r of rows) {
+    counts.total += 1;
+    if (r.cls === 'waiting') counts.waiting += 1;
+    else if (r.cls === 'running' || r.cls === 'retrying') counts.running += 1;
+    else counts.idle += 1;
+    counts.unread += r.unread;
+  }
+  return { kind: 'ok', selectedId: resolveSelectedId(roster, fallbackId), counts, rows };
+}
 /* --- format:end --- */
 
 /* features/bot-inspector page script. Runs inside (function(gx){...})(window.__grokbotX).
- * Injects a read-only "Bot 透视" floating panel. Idempotent. */
+ * Injects a read-only cross-bot status strip ("Bot 透视"). Idempotent.
+ * Styling reuses Grok Bot's own --sand-* design tokens (fallbacks are the values
+ * measured in the light theme), so it follows the client's theme. */
 const FEATURE = 'bot-inspector';
 const MARK = 'data-grokbotx-feature';
 const STYLE_ID = 'gx-bi-style';
 const TOGGLE_ID = 'gx-bi-toggle';
 const PANEL_ID = 'gx-bi-panel';
-const TABS = [
-  { id: 'now', label: '现在' },
-  { id: 'timeline', label: '时间线' },
-  { id: 'connection', label: '用量与连接' },
+const COUNT_ITEMS = [
+  { key: 'total', label: '总数' },
+  { key: 'running', label: '运行中' },
+  { key: 'waiting', label: '等你回复' },
+  { key: 'idle', label: '空闲' },
+  { key: 'unread', label: '未读' },
 ];
 
 const STYLE = `
-#gx-bi-toggle,#gx-bi-panel{box-sizing:border-box;font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;color:#e8eaed;line-height:1.45;-webkit-font-smoothing:antialiased}
+#gx-bi-toggle,#gx-bi-panel{box-sizing:border-box;font-family:var(--cursor-font-family-sans,XVF,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif);color:var(--sand-text-primary,#1c1c1c);-webkit-font-smoothing:antialiased;letter-spacing:normal;-webkit-app-region:no-drag}
 #gx-bi-toggle *,#gx-bi-panel *{box-sizing:border-box}
-#gx-bi-toggle{position:fixed;top:120px;right:0;z-index:2147483000;margin:0;padding:10px 8px;border:1px solid #3a3d45;border-right:0;border-radius:8px 0 0 8px;background:#1b1d21;color:#e8eaed;font-size:12px;letter-spacing:0.02em;cursor:pointer;writing-mode:vertical-rl;text-orientation:mixed;box-shadow:-2px 2px 10px rgba(0,0,0,.35)}
-#gx-bi-toggle:hover{background:#25282e}
-#gx-bi-toggle.gx-bi-toggle-on{background:#2a3140;color:#8ab4f8}
-#gx-bi-panel{position:fixed;top:72px;right:28px;z-index:2147483000;width:360px;max-width:calc(100vw - 40px);max-height:calc(100vh - 96px);display:flex;flex-direction:column;background:#1b1d21;border:1px solid #3a3d45;border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,.45);overflow:hidden}
 #gx-bi-panel[hidden],#gx-bi-toggle[hidden]{display:none !important}
-#gx-bi-panel .gx-bi-header{display:flex;align-items:center;gap:8px;padding:10px 10px 8px 14px;border-bottom:1px solid #2e323a;flex:0 0 auto}
+#gx-bi-toggle{position:fixed;top:120px;right:0;z-index:2147483000;margin:0;padding:12px 7px;border:1px solid var(--sand-border-secondary-translucent,#1c1c1c1f);border-right:0;border-radius:10px 0 0 10px;background:var(--sand-bg-elevated,#ffffff);color:var(--sand-text-secondary,#1c1c1cad);font-size:var(--sand-font-size-xs,12px);font-weight:var(--sand-font-weight-medium,500);line-height:1;cursor:pointer;writing-mode:vertical-rl;text-orientation:mixed;box-shadow:var(--sand-shadow-popover,0 10px 20px -3px #1c1c1c1a,0 4px 6px -4px #1c1c1c1a,0 0 0 1px #1c1c1c01);transition:background-color 150ms,color 150ms}
+#gx-bi-toggle:hover{background:var(--sand-bg-elevated-hover,#f1f1f1);color:var(--sand-text-primary,#1c1c1c)}
+#gx-bi-toggle.gx-bi-toggle-on{color:var(--sand-text-primary,#1c1c1c)}
+#gx-bi-panel{position:fixed;top:64px;right:30px;z-index:2147483000;width:340px;max-width:calc(100vw - 48px);max-height:calc(100vh - 96px);display:flex;flex-direction:column;background:var(--sand-bg-elevated,#ffffff);border:1px solid var(--sand-border-tertiary-translucent,#1c1c1c14);border-radius:var(--sand-menu-radius,16px);box-shadow:var(--sand-shadow-popover,0 10px 20px -3px #1c1c1c1a,0 4px 6px -4px #1c1c1c1a,0 0 0 1px #1c1c1c01);overflow:hidden}
+#gx-bi-panel .gx-bi-header{display:flex;align-items:center;gap:8px;padding:12px 10px 4px 16px;flex:0 0 auto}
 #gx-bi-panel .gx-bi-titles{flex:1 1 auto;min-width:0}
-#gx-bi-panel .gx-bi-title{font-size:13px;font-weight:650;color:#f1f3f4}
-#gx-bi-panel .gx-bi-sub{font-size:11px;color:#9aa0a6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
-#gx-bi-panel .gx-bi-close{flex:0 0 auto;width:28px;height:28px;border:0;border-radius:6px;background:transparent;color:#c4c7cc;font-size:18px;line-height:1;cursor:pointer}
-#gx-bi-panel .gx-bi-close:hover{background:#2e323a;color:#fff}
-#gx-bi-panel .gx-bi-tabs{display:flex;gap:2px;padding:8px 10px 0;flex:0 0 auto}
-#gx-bi-panel .gx-bi-tab{flex:1 1 0;border:0;border-radius:6px 6px 0 0;padding:6px 4px 8px;background:transparent;color:#9aa0a6;font-size:12px;cursor:pointer}
-#gx-bi-panel .gx-bi-tab:hover{color:#e8eaed;background:#22252b}
-#gx-bi-panel .gx-bi-tab.gx-bi-tab-active{color:#8ab4f8;background:#22252b;box-shadow:inset 0 -2px 0 #8ab4f8}
-#gx-bi-panel .gx-bi-body{flex:1 1 auto;overflow:auto;padding:10px 14px 12px;min-height:120px}
-#gx-bi-panel .gx-bi-note{margin:0 0 10px;padding:8px 10px;border-radius:6px;background:#22252b;color:#9aa0a6;font-size:11px}
-#gx-bi-panel .gx-bi-empty{margin:24px 4px;color:#9aa0a6;font-size:13px;text-align:center}
-#gx-bi-panel .gx-bi-dl{margin:0;display:grid;grid-template-columns:96px 1fr;gap:8px 10px}
-#gx-bi-panel .gx-bi-dt{margin:0;color:#9aa0a6;font-size:11px;font-weight:500;padding-top:1px}
-#gx-bi-panel .gx-bi-dd{margin:0;color:#e8eaed;font-size:12px;word-break:break-word;white-space:pre-wrap}
-#gx-bi-panel .gx-bi-foot{flex:0 0 auto;padding:6px 14px 8px;border-top:1px solid #2e323a;color:#80868b;font-size:10px}
+#gx-bi-panel .gx-bi-title{font-size:var(--sand-font-size-base,14px);line-height:var(--sand-line-height-base,20px);font-weight:var(--sand-font-weight-semibold,600);color:var(--sand-text-primary,#1c1c1c)}
+#gx-bi-panel .gx-bi-sub{font-size:var(--sand-font-size-xs,12px);line-height:var(--sand-line-height-xs,16px);color:var(--sand-text-tertiary,#1c1c1c8f);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#gx-bi-panel .gx-bi-close{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;padding:0;border:0;border-radius:9999px;background:transparent;color:var(--sand-icon-secondary,#1c1c1ca8);font-size:18px;line-height:1;cursor:pointer;transition:background-color 150ms}
+#gx-bi-panel .gx-bi-close:hover{background:var(--sand-bg-hover,#1c1c1c0f);color:var(--sand-icon-primary,#1c1c1ceb)}
+#gx-bi-panel .gx-bi-counts{display:flex;gap:4px;padding:8px 12px 10px;flex:0 0 auto}
+#gx-bi-panel .gx-bi-count{flex:1 1 0;min-width:0;display:flex;flex-direction:column;align-items:center;gap:1px;padding:6px 2px;border-radius:10px;background:var(--sand-bg-quaternary,#1c1c1c0a)}
+#gx-bi-panel .gx-bi-count-n{font-size:var(--sand-font-size-lg,15px);line-height:var(--sand-line-height-base,20px);font-weight:var(--sand-font-weight-semibold,600);font-variant-numeric:tabular-nums;color:var(--sand-text-primary,#1c1c1c)}
+#gx-bi-panel .gx-bi-count-l{font-size:var(--sand-font-size-xxs,11px);line-height:var(--sand-line-height-xxs,16px);color:var(--sand-text-tertiary,#1c1c1c8f);white-space:nowrap}
+#gx-bi-panel .gx-bi-count[data-gx-bi-count="waiting"][data-gx-bi-hot] .gx-bi-count-n{color:var(--sand-text-warn-primary,#aa6300)}
+#gx-bi-panel .gx-bi-count[data-gx-bi-count="running"][data-gx-bi-hot] .gx-bi-count-n{color:var(--sand-text-success-primary,#00854a)}
+#gx-bi-panel .gx-bi-count[data-gx-bi-count="unread"][data-gx-bi-hot] .gx-bi-count-n{color:var(--sand-text-accent-primary,#0b6dd3)}
+#gx-bi-panel .gx-bi-divider{height:1px;margin:0 16px;background:var(--sand-border-tertiary-translucent,#1c1c1c14);flex:0 0 auto}
+#gx-bi-panel .gx-bi-list{flex:1 1 auto;overflow:auto;padding:6px 8px 8px;min-height:80px}
+#gx-bi-panel .gx-bi-row{display:flex;gap:10px;align-items:flex-start;padding:8px;border-radius:var(--sand-agent-item-radius,12px);transition:background-color 150ms}
+#gx-bi-panel .gx-bi-row:hover{background:var(--sand-bg-hover,#1c1c1c0f)}
+#gx-bi-panel .gx-bi-row[data-gx-bi-selected]{background:var(--sand-bg-active,#1c1c1c14)}
+#gx-bi-panel .gx-bi-dot{flex:0 0 auto;width:8px;height:8px;margin-top:6px;border-radius:9999px;background:var(--sand-icon-quaternary,#1c1c1c52)}
+#gx-bi-panel .gx-bi-row[data-gx-bi-cls="running"] .gx-bi-dot{background:var(--sand-icon-success-primary,#10ab61);box-shadow:0 0 0 3px var(--sand-bg-success-secondary,#14c16f17);animation:gx-bi-pulse 1.6s ease-in-out infinite}
+#gx-bi-panel .gx-bi-row[data-gx-bi-cls="waiting"] .gx-bi-dot{background:var(--sand-icon-warn-primary,#da830e);box-shadow:0 0 0 3px var(--sand-bg-warn-secondary,#f5931217)}
+#gx-bi-panel .gx-bi-row[data-gx-bi-cls="retrying"] .gx-bi-dot{background:var(--sand-icon-orange-primary,#ee620d);box-shadow:0 0 0 3px var(--sand-bg-orange-secondary,#fd690f17)}
+@keyframes gx-bi-pulse{0%,100%{opacity:1}50%{opacity:.45}}
+#gx-bi-panel .gx-bi-main{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:1px}
+#gx-bi-panel .gx-bi-line{display:flex;align-items:center;gap:6px;min-width:0}
+#gx-bi-panel .gx-bi-name{flex:1 1 auto;min-width:0;font-size:var(--sand-font-size-base,14px);line-height:var(--sand-line-height-base,20px);font-weight:var(--sand-font-weight-medium,500);color:var(--sand-text-primary,#1c1c1c);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#gx-bi-panel .gx-bi-time{flex:0 0 auto;font-size:var(--sand-font-size-xs,12px);line-height:var(--sand-line-height-xs,16px);color:var(--sand-text-quaternary,#1c1c1c66);white-space:nowrap}
+#gx-bi-panel .gx-bi-status{flex:1 1 auto;min-width:0;font-size:var(--sand-font-size-xs,12px);line-height:var(--sand-line-height-xs,16px);color:var(--sand-text-tertiary,#1c1c1c8f);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#gx-bi-panel .gx-bi-row[data-gx-bi-cls="running"] .gx-bi-status{color:var(--sand-text-success-primary,#00854a)}
+#gx-bi-panel .gx-bi-row[data-gx-bi-cls="waiting"] .gx-bi-status{color:var(--sand-text-warn-primary,#aa6300)}
+#gx-bi-panel .gx-bi-row[data-gx-bi-cls="retrying"] .gx-bi-status{color:var(--sand-text-orange-primary,#c14c00)}
+#gx-bi-panel .gx-bi-tag{flex:0 0 auto;padding:0 6px;border-radius:9999px;font-size:var(--sand-font-size-xxs,11px);line-height:16px;font-weight:var(--sand-font-weight-medium,500);white-space:nowrap;background:var(--sand-bg-orange-secondary,#fd690f17);color:var(--sand-text-orange-primary,#c14c00)}
+#gx-bi-panel .gx-bi-tag[data-gx-bi-tag="handoff"]{background:var(--sand-bg-warn-secondary,#f5931217);color:var(--sand-text-warn-primary,#aa6300)}
+#gx-bi-panel .gx-bi-badge{flex:0 0 auto;min-width:18px;height:18px;padding:0 5px;border-radius:9999px;background:var(--sand-bg-accent-primary,#1680f3);color:var(--sand-text-on-primary,#ffffff);font-size:var(--sand-font-size-xxs,11px);line-height:18px;font-weight:var(--sand-font-weight-semibold,600);text-align:center;font-variant-numeric:tabular-nums}
+#gx-bi-panel .gx-bi-badge[data-gx-bi-dot]{min-width:8px;width:8px;height:8px;padding:0}
+#gx-bi-panel .gx-bi-preview{font-size:var(--sand-font-size-sm,13px);line-height:var(--sand-line-height-sm,18px);color:var(--sand-text-secondary,#1c1c1cad);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#gx-bi-panel .gx-bi-empty{margin:24px 8px;color:var(--sand-text-tertiary,#1c1c1c8f);font-size:var(--sand-font-size-sm,13px);line-height:var(--sand-line-height-sm,18px);text-align:center}
+#gx-bi-panel .gx-bi-foot{flex:0 0 auto;padding:6px 16px 10px;color:var(--sand-text-quaternary,#1c1c1c66);font-size:var(--sand-font-size-xxs,11px);line-height:var(--sand-line-height-xxs,16px)}
 `.replace(/^\s+|\s+$/g, '');
 
 function el(tag, attrs, children) {
@@ -389,7 +559,6 @@ function el(tag, attrs, children) {
       if (v == null || v === false) continue;
       if (k === 'className') node.className = v;
       else if (k === 'text') node.textContent = v;
-      else if (k === 'onClick') node.addEventListener('click', v, true);
       else node.setAttribute(k, v === true ? '' : String(v));
     }
   }
@@ -404,32 +573,76 @@ function mark(node) {
 
 const state = {
   open: true,
-  tab: 'now',
   lastJson: '',
   timer: 0,
 };
 
-function fieldsFor(tab, snapshot) {
-  if (tab === 'timeline') return snapshot.timeline;
-  if (tab === 'connection') return snapshot.connection;
-  return snapshot.now;
+function statusText(r) {
+  if (r.cls === 'running' && r.activity) return `${r.status} · ${r.activity}`;
+  if (r.activity && r.cls !== 'idle') return `${r.status} · ${r.activity}`;
+  return r.status;
 }
 
-function renderBody(body, snapshot) {
-  body.textContent = '';
+function renderRow(r, selectedId) {
+  const tags = [];
+  if (r.retrying) tags.push(el('span', { className: 'gx-bi-tag', 'data-gx-bi-tag': 'retry', text: '重试中' }));
+  if (r.boxHandoff) tags.push(el('span', { className: 'gx-bi-tag', 'data-gx-bi-tag': 'handoff', text: '等你接手' }));
+  let badge = null;
+  if (r.unread > 0) badge = el('span', { className: 'gx-bi-badge', title: `${r.unread} 条未读`, text: r.unread > 99 ? '99+' : String(r.unread) });
+  else if (r.hasUnread) badge = el('span', { className: 'gx-bi-badge', 'data-gx-bi-dot': true, title: '有未读' });
+  return el('div', {
+    className: 'gx-bi-row',
+    'data-gx-bi-cls': r.cls,
+    'data-gx-bi-selected': r.id && r.id === selectedId ? true : null,
+  }, [
+    el('span', { className: 'gx-bi-dot', 'aria-hidden': 'true' }),
+    el('div', { className: 'gx-bi-main' }, [
+      el('div', { className: 'gx-bi-line' }, [
+        el('span', { className: 'gx-bi-name', title: r.name, text: r.name }),
+        r.relative ? el('span', { className: 'gx-bi-time', text: r.relative }) : null,
+      ]),
+      el('div', { className: 'gx-bi-line' }, [
+        el('span', { className: 'gx-bi-status', text: statusText(r) }),
+        ...tags,
+        badge,
+      ]),
+      r.preview ? el('div', { className: 'gx-bi-preview', title: r.preview, text: r.preview }) : null,
+    ]),
+  ]);
+}
+
+function renderCounts(box, counts) {
+  box.textContent = '';
+  for (const item of COUNT_ITEMS) {
+    const n = counts[item.key] || 0;
+    box.appendChild(el('div', {
+      className: 'gx-bi-count',
+      'data-gx-bi-count': item.key,
+      'data-gx-bi-hot': item.key !== 'total' && item.key !== 'idle' && n > 0 ? true : null,
+    }, [
+      el('span', { className: 'gx-bi-count-n', text: String(n) }),
+      el('span', { className: 'gx-bi-count-l', text: item.label }),
+    ]));
+  }
+}
+
+function render(panel, snapshot) {
+  const sub = panel.querySelector('.gx-bi-sub');
+  if (sub) {
+    sub.textContent = snapshot.kind === 'ok' ? `全部 ${snapshot.counts.total} 个 Bot · 只读` : '只读';
+  }
+  renderCounts(panel.querySelector('.gx-bi-counts'), snapshot.counts);
+  const list = panel.querySelector('.gx-bi-list');
+  list.textContent = '';
   if (snapshot.kind !== 'ok') {
-    body.appendChild(el('p', { className: 'gx-bi-empty', text: snapshot.kind === 'no-row' ? EMPTY_ROW : EMPTY_ROSTER }));
+    list.appendChild(el('p', { className: 'gx-bi-empty', text: EMPTY_ROSTER }));
     return;
   }
-  if (state.tab === 'connection') {
-    body.appendChild(el('p', { className: 'gx-bi-note', text: CONNECTION_NOTE }));
+  if (!snapshot.rows.length) {
+    list.appendChild(el('p', { className: 'gx-bi-empty', text: '名册里还没有 Bot。' }));
+    return;
   }
-  const dl = el('dl', { className: 'gx-bi-dl' });
-  for (const field of fieldsFor(state.tab, snapshot)) {
-    dl.appendChild(el('dt', { className: 'gx-bi-dt', text: field.label }));
-    dl.appendChild(el('dd', { className: 'gx-bi-dd', text: field.value }));
-  }
-  body.appendChild(dl);
+  for (const r of snapshot.rows) list.appendChild(renderRow(r, snapshot.selectedId));
 }
 
 function setOpen(open) {
@@ -437,7 +650,10 @@ function setOpen(open) {
   const panel = document.getElementById(PANEL_ID);
   const toggle = document.getElementById(TOGGLE_ID);
   if (panel) panel.hidden = !state.open;
-  if (toggle) toggle.classList.toggle('gx-bi-toggle-on', state.open);
+  if (toggle) {
+    toggle.classList.toggle('gx-bi-toggle-on', state.open);
+    toggle.setAttribute('aria-expanded', state.open ? 'true' : 'false');
+  }
   if (state.open) startPolling();
   else stopPolling();
 }
@@ -451,6 +667,7 @@ function stopPolling() {
 
 function startPolling() {
   stopPolling();
+  state.lastJson = '';
   refresh();
   state.timer = setInterval(refresh, POLL_MS);
 }
@@ -465,16 +682,14 @@ function refresh() {
   let snapshot;
   try {
     const page = readPageState(document);
-    snapshot = panelState(page.roster, Date.now(), undefined, page.currentAgentId);
+    snapshot = stripState(page.roster, Date.now(), undefined, page.currentAgentId);
   } catch {
-    snapshot = { kind: 'no-roster', title: '', selectedId: '', now: [], timeline: [], connection: [] };
+    snapshot = { kind: 'no-roster', selectedId: '', counts: emptyCounts(), rows: [] };
   }
   const json = JSON.stringify(snapshot);
   if (json === state.lastJson) return;
   state.lastJson = json;
-  const sub = panel.querySelector('.gx-bi-sub');
-  if (sub) sub.textContent = snapshot.kind === 'ok' ? (snapshot.title || snapshot.selectedId || '未命名') : '只读';
-  renderBody(panel.querySelector('.gx-bi-body'), snapshot);
+  render(panel, snapshot);
 }
 
 function ensure() {
@@ -498,21 +713,13 @@ function ensure() {
     }));
     toggle.addEventListener('click', (ev) => {
       ev.preventDefault();
-      ev.stopPropagation();
       setOpen(!state.open);
-    }, true);
+    }, false);
     (document.body || document.documentElement).appendChild(toggle);
   }
 
   let panel = document.getElementById(PANEL_ID);
   if (!panel) {
-    const tabs = TABS.map((tab) => el('button', {
-      type: 'button',
-      className: 'gx-bi-tab' + (tab.id === state.tab ? ' gx-bi-tab-active' : ''),
-      'data-gx-bi-tab': tab.id,
-      'aria-selected': tab.id === state.tab ? 'true' : 'false',
-      text: tab.label,
-    }));
     panel = mark(el('div', { id: PANEL_ID, role: 'dialog', 'aria-label': 'Bot 透视' }, [
       el('div', { className: 'gx-bi-header' }, [
         el('div', { className: 'gx-bi-titles' }, [
@@ -521,32 +728,15 @@ function ensure() {
         ]),
         el('button', { type: 'button', className: 'gx-bi-close', title: '关闭', 'aria-label': '关闭', text: '×' }),
       ]),
-      el('div', { className: 'gx-bi-tabs', role: 'tablist' }, tabs),
-      el('div', { className: 'gx-bi-body' }),
+      el('div', { className: 'gx-bi-counts' }),
+      el('div', { className: 'gx-bi-divider' }),
+      el('div', { className: 'gx-bi-list', role: 'list' }),
       el('div', { className: 'gx-bi-foot', text: '只读 · 每 1.5 秒从本地名册刷新' }),
     ]));
-    panel.addEventListener('click', (ev) => ev.stopPropagation(), false);
     panel.querySelector('.gx-bi-close').addEventListener('click', (ev) => {
       ev.preventDefault();
-      ev.stopPropagation();
       setOpen(false);
-    }, true);
-    panel.querySelector('.gx-bi-tabs').addEventListener('click', (ev) => {
-      const btn = ev.target && ev.target.closest && ev.target.closest('[data-gx-bi-tab]');
-      if (!btn) return;
-      ev.preventDefault();
-      ev.stopPropagation();
-      const id = btn.getAttribute('data-gx-bi-tab');
-      if (!id || id === state.tab) return;
-      state.tab = id;
-      state.lastJson = '';
-      for (const t of panel.querySelectorAll('.gx-bi-tab')) {
-        const on = t.getAttribute('data-gx-bi-tab') === id;
-        t.classList.toggle('gx-bi-tab-active', on);
-        t.setAttribute('aria-selected', on ? 'true' : 'false');
-      }
-      refresh();
-    }, true);
+    }, false);
     (document.body || document.documentElement).appendChild(panel);
   }
 
