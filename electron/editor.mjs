@@ -2,6 +2,7 @@
 // Loads the built HTML over a custom scheme (no HTTP server). Isolated,
 // sandboxed renderer; image load and exports go through preload + IPC.
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
@@ -220,43 +221,21 @@ function waitReady(wc, ms = 20000) {
   });
 }
 
-async function queryDirty(w) {
-  if (!w || w.isDestroyed()) return false;
-  try {
-    return !!(await w.webContents.executeJavaScript(
-      '!!(globalThis.GrokbotXEditorHooks&&GrokbotXEditorHooks.isDirty&&GrokbotXEditorHooks.isDirty())',
-      true,
-    ));
-  } catch {
-    // A failed query must still present a close prompt rather than freeze the window.
-    return true;
-  }
-}
-
-async function confirmClose(w) {
-  const parent = w && !w.isDestroyed() ? w : null;
-  const { response } = await dialog.showMessageBox(parent, {
-    type: 'question',
-    buttons: ['关闭', '取消'],
-    defaultId: 1,
-    cancelId: 1,
-    noLink: true,
-    title: '图片批注',
-    message: '当前编辑还没有保存。要关闭窗口吗？',
-    detail: '关闭后未保存的批注会丢失。已经导出的文件不受影响。',
-  });
-  return response === 0;
-}
+let changeListener = null;
+/** main.mjs registers this to refresh the tray menu when the window appears or goes away. */
+export function onEditorChange(fn) { changeListener = typeof fn === 'function' ? fn : null; }
 
 const editorSession = createEditorSession({
   createWindow() {
     const w = buildEditorWindow();
     win = w;
+    // × hides the window; page state stays in memory. Quit / feature disable
+    // go through forceClose(), after which this handler lets the close through.
     w.on('close', (e) => {
-      log.info(`editor close requested allow=${editorSession.willAllowClose()}`);
-      if (editorSession.willAllowClose()) return;
-      e.preventDefault();
-      editorSession.requestClose().then((d) => log.info(`close decision ${JSON.stringify({ close: d.close, prompted: d.prompted, error: d.error && d.error.message })}`)).catch((err) => log.error(`close prompt failed: ${err.message}`));
+      if (editorSession.handleCloseRequest(w)) {
+        e.preventDefault();
+        log.info('editor window hidden (state kept)');
+      }
     });
     return w;
   },
@@ -265,18 +244,15 @@ const editorSession = createEditorSession({
     if (win === w) win = null;
     try { if (w && !w.isDestroyed()) w.destroy(); } catch { /* already gone */ }
   },
-  close(w) {
-    try { if (w && !w.isDestroyed()) w.close(); } catch { /* already gone */ }
-  },
+  hide(w) { if (w && !w.isDestroyed()) w.hide(); },
   load(w) { return w.loadURL(EDITOR_URL); },
   waitReady(w) { return waitReady(w.webContents); },
-  queryDirty,
-  confirmClose,
   show(w) {
     if (w.isMinimized()) w.restore();
     w.show();
     w.focus();
   },
+  onChange() { try { changeListener?.(); } catch { /* ignore */ } },
 });
 
 function buildEditorWindow() {
@@ -311,12 +287,23 @@ export async function openEditor(payload) {
     height: v.height,
     exportDir: hostInfo.exportDir || '',
   };
-  // Always replace the current window. A second 「编辑」 click is an explicit
-  // request to load a new image; do not let a beforeunload guard or a same-URL
-  // reload hang, and serialize callers so waitReady listeners cannot stack.
-  const opened = await editorSession.open();
+  // Same image bytes as the current session: show the kept window as is.
+  // Different image (or no live window): build a fresh window. Calls are
+  // serialized so overlapping 「编辑」 clicks cannot stack waitReady listeners.
+  const key = crypto.createHash('sha256').update(v.buffer).digest('hex');
+  const { window: opened, reused } = await editorSession.open(key);
   if (opened) win = opened;
-  log.info(`loaded ${v.name} into annotation window`);
+  log.info(reused ? `reused annotation window for ${v.name} (same image)` : `loaded ${v.name} into annotation window`);
+  return { reused };
+}
+
+/** Tray action: show the hidden window again. Returns false if there is none. */
+export function showEditor() {
+  return editorSession.showExisting();
+}
+
+export function hasEditorWindow() {
+  return !!editorSession.current();
 }
 
 export async function openImageFile(file) {
@@ -359,7 +346,9 @@ export function lastExport() {
   return { dir: lastExportDir, file: lastExportFile };
 }
 
-export function closeEditor() {
+/** Real close: app quit or feature disable. Never prompts, never hides. */
+export function closeEditor({ quitting = false } = {}) {
+  if (quitting) editorSession.markQuitting();
   editorSession.forceClose();
   win = null;
   pendingImage = null;

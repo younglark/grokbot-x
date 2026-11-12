@@ -1,5 +1,8 @@
 // Window lifecycle for the in-app annotation editor. No Electron imports, so
-// tests can exercise open / reload / close without launching a BrowserWindow.
+// tests can exercise open / hide / reopen / quit without a BrowserWindow.
+//
+// × hides the window and keeps the page (annotations, undo, zoom) in memory.
+// Only forceClose() (app quit, feature disable) destroys it.
 export function createWaitReady({
   subscribe,
   timeoutMs = 20000,
@@ -12,10 +15,7 @@ export function createWaitReady({
   let unsubscribe = () => {};
   let resolve;
   let reject;
-  const promise = new Promise((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
+  const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
   function finish(err) {
     if (settled) return;
     settled = true;
@@ -28,9 +28,7 @@ export function createWaitReady({
   unsubscribe = subscribe(() => finish()) || (() => {});
   return {
     promise,
-    cancel(reason) {
-      finish(reason instanceof Error ? reason : new Error(reason || 'cancelled'));
-    },
+    cancel(reason) { finish(reason instanceof Error ? reason : new Error(reason || 'cancelled')); },
   };
 }
 
@@ -43,44 +41,34 @@ export function createSerialQueue() {
   };
 }
 
-export async function resolveCloseRequest({ dirty, confirm }) {
-  if (!dirty) return { close: true, prompted: false };
-  try {
-    const ok = await confirm();
-    return { close: !!ok, prompted: true };
-  } catch (error) {
-    // The user already asked to close; a failed prompt must not trap them.
-    return { close: true, prompted: true, error };
-  }
-}
-
 export function createEditorSession(hooks) {
   const enqueue = createSerialQueue();
   let win = null;
-  let allowClose = false;
-  let prompting = false;
+  let imageKey = null;
+  let quitting = false;
+  const notify = () => { try { hooks.onChange?.(); } catch { /* ignore */ } };
 
   function live() {
     return win && !hooks.isDestroyed(win) ? win : null;
   }
 
-  function willAllowClose() {
-    return allowClose || !live();
-  }
-
   function discardCurrent() {
     const w = live();
     win = null;
-    allowClose = false;
-    if (!w) return;
-    try { hooks.destroy(w); } catch { /* already gone */ }
+    imageKey = null;
+    if (w) { try { hooks.destroy(w); } catch { /* already gone */ } }
   }
 
-  async function openNow() {
+  async function openNow(key) {
+    const existing = live();
+    if (existing && key && imageKey === key) {
+      try { hooks.show(existing); } catch { /* headless */ }
+      notify();
+      return { window: existing, reused: true };
+    }
     discardCurrent();
     const w = hooks.createWindow();
     win = w;
-    allowClose = false;
     const ready = hooks.waitReady(w);
     try {
       await hooks.load(w);
@@ -88,51 +76,59 @@ export function createEditorSession(hooks) {
       ready.cancel(error);
       if (win === w) win = null;
       try { hooks.destroy(w); } catch { /* ignore */ }
+      notify();
       throw error;
     }
-    await ready.promise;
-    try { hooks.show?.(w); } catch { /* headless tests */ }
-    return w;
-  }
-
-  async function requestClose() {
-    const w = live();
-    if (!w || allowClose) return { close: true, prompted: false };
-    if (prompting) return { close: false, prompted: true };
-    prompting = true;
     try {
-      let dirty = false;
-      try { dirty = !!(await hooks.queryDirty(w)); }
-      catch { dirty = true; }
-      const decision = await resolveCloseRequest({
-        dirty,
-        confirm: () => hooks.confirmClose(w),
-      });
-      if (decision.close) {
-        allowClose = true;
-        try { hooks.close(w); } catch {
-          try { hooks.destroy(w); } catch { /* ignore */ }
-        }
-      }
-      return decision;
-    } finally {
-      prompting = false;
+      await ready.promise;
+    } catch (error) {
+      if (win === w) win = null;
+      try { hooks.destroy(w); } catch { /* ignore */ }
+      notify();
+      throw error;
     }
+    imageKey = key || null;
+    try { hooks.show(w); } catch { /* headless */ }
+    notify();
+    return { window: w, reused: false };
   }
 
-  function forceClose() {
-    allowClose = true;
-    const w = live();
-    win = null;
-    if (!w) return;
-    try { hooks.destroy(w); } catch { /* ignore */ }
+  /** Called from the window 'close' event. Returns true when close must be prevented. */
+  function handleCloseRequest(w) {
+    if (quitting || !w || hooks.isDestroyed(w)) return false;
+    try { hooks.hide(w); } catch { /* ignore */ }
+    notify();
+    return true;
   }
+
+  function showExisting() {
+    const w = live();
+    if (!w) return false;
+    try { hooks.show(w); } catch { /* ignore */ }
+    notify();
+    return true;
+  }
+
+  // destroy() does not emit 'close', so the hide handler cannot block it. The
+  // flag only covers a close event that races with teardown; it is cleared so a
+  // re-enabled feature gets hide-on-close again.
+  function forceClose() {
+    quitting = true;
+    try { discardCurrent(); } finally { quitting = false; }
+    notify();
+  }
+
+  /** App is quitting: from now on every close goes through. */
+  function markQuitting() { quitting = true; }
 
   return {
-    open: () => enqueue(openNow),
-    requestClose,
-    willAllowClose,
+    open: (key) => enqueue(() => openNow(key)),
+    handleCloseRequest,
+    showExisting,
     forceClose,
+    markQuitting,
     current: live,
+    imageKey: () => imageKey,
+    isQuitting: () => quitting,
   };
 }

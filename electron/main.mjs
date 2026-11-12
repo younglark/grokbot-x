@@ -7,7 +7,7 @@ import { makePlatform } from '../core/platform.mjs';
 import { APP_DIR, loadConfig, saveUserConfig, appVersion } from '../core/config.mjs';
 import { createLogger } from '../core/log.mjs';
 import { ensureClient } from './client.mjs';
-import { registerEditorScheme, handleEditorProtocol, closeEditor, configureEditor, openImageFile, requestSelfTestExport, exportsRoot } from './editor.mjs';
+import { registerEditorScheme, handleEditorProtocol, closeEditor, configureEditor, openImageFile, requestSelfTestExport, exportsRoot, showEditor, hasEditorWindow, onEditorChange } from './editor.mjs';
 
 registerEditorScheme();
 
@@ -72,6 +72,7 @@ function rebuildMenu() {
     { type: 'separator' },
     { label: connected ? '重启 Grok Bot（带调试口）' : '启动 Grok Bot（带调试口）', click: () => connect({ forceRestart: connected }) },
     { type: 'separator' },
+    { label: '显示图片批注窗口', enabled: hasEditorWindow(), click: () => { showEditor(); } },
     { label: '功能', submenu: features.length ? features : [{ label: '（无）', enabled: false }] },
     {
       label: '开机启动', type: 'checkbox', checked: auto,
@@ -94,6 +95,8 @@ async function toggleFeature(name, enabled) {
   const { file } = saveUserConfig(plat, { features: { [name]: { enabled } } });
   cfgWrap = loadConfig(plat, file);
   if (kernel) await kernel.setFeatureEnabled(name, enabled);
+  // Disabling 图片批注 is a real close of its (possibly hidden) window.
+  if (name === 'edithere' && !enabled) { try { closeEditor(); } catch { /* ignore */ } }
   log.info(`feature ${name} ${enabled ? 'enabled' : 'disabled'}`);
   rebuildMenu();
 }
@@ -248,6 +251,7 @@ if (!gotLock) {
     const editorBuild = path.join(APP_DIR, 'features', 'edithere', 'build');
     configureEditor({ stateDir: STATE, buildDir: editorBuild });
     handleEditorProtocol(editorBuild);
+    onEditorChange(() => rebuildMenu());
     const hasTray = tryCreateTray();
     if (!hasTray) log.info('continuing headless: will still attach to Grok Bot');
     // Default off; honour a previously saved preference.
@@ -276,10 +280,12 @@ if (!gotLock) {
 }
 
 app.on('window-all-closed', (e) => { e.preventDefault?.(); }); // tray app
+app.on('will-quit', () => { try { closeEditor({ quitting: true }); } catch { /* ignore */ } });
 app.on('before-quit', async (e) => {
+  // The editor window hides on ×; destroy it first so it cannot block quit.
+  try { closeEditor({ quitting: true }); } catch { /* ignore */ }
   if (kernel && !kernel.stopping) {
     e.preventDefault();
-    try { closeEditor(); } catch { /* ignore */ }
     try { await kernel.shutdown(); } catch { /* ignore */ }
     kernel = null;
     try { if (Number(fs.readFileSync(path.join(STATE, 'daemon.pid'), 'utf8')) === process.pid) fs.unlinkSync(path.join(STATE, 'daemon.pid')); } catch { /* ignore */ }
