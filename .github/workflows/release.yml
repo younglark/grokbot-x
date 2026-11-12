@@ -50,8 +50,8 @@ jobs:
         run: |
           node packaging/check.mjs
           if [[ "${{ matrix.os }}" == "ubuntu-latest" ]]; then
-            xvfb-run --auto-servernum -- npx electron . --dry-run
-            xvfb-run --auto-servernum -- npx electron . --help
+            xvfb-run --auto-servernum -- npx electron . --no-sandbox --dry-run
+            xvfb-run --auto-servernum -- npx electron . --no-sandbox --help
           else
             npx electron . --dry-run
             npx electron . --help
