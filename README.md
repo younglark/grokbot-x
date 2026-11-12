@@ -54,7 +54,7 @@ irm https://github.com/younglark/grokbot-x/releases/latest/download/install.ps1 
 1. 先安装官方 [Grok Bot](https://cursor.com) 桌面端。
 2. 启动「Grok Bot X」。若 Grok Bot 已在运行且已带本机调试口，会直接挂接、不重启；否则请用托盘菜单里的「启动 Grok Bot（带调试口）」。若 Grok Bot 已在运行但没有调试口，会先征得同意再重启。
 3. 打开对话里的图片预览，点下载按钮左边的「✎ 编辑」，会弹出内置的「图片批注」窗口。再点其他图片会复用同一个窗口。批注后的 JSON / 图片默认保存到状态目录下的 `features/edithere/exports/<时间戳>/`，也可在窗口顶栏点「另存为…」自选位置。
-4. 对话或输入框里的 `.zip` 附件卡下方会出现「▶ 打开预览」。点击后会弹出「交互预览验收」窗口；填完页面里的反馈点它自己的「复制全部反馈」，再回到 Grok Bot 粘贴即可。消息里的附件会先弹一次系统保存框（官方 `downloadAttachment`），确认保存到「下载」目录后自动打开；在保存框里点取消则什么都不做。实在拿不到时会弹出文件选择框（默认定位到「下载」目录里的同名文件）。托盘里的「打开本地验收 zip…」可以直接打开本机的包。
+4. 对话或输入框里的 `.zip` 附件卡下方会出现「▶ 打开预览」。点击后会弹出「交互预览验收」窗口；填完页面里的反馈点它自己的「复制全部反馈」，再回到 Grok Bot 粘贴即可。消息里的附件通常会直接打开，不弹保存框。若官方媒体协议不可用，会再弹一次系统保存框（默认「下载」目录）；在保存框里点取消则什么都不做。实在拿不到时会弹出我们自己的文件选择框。托盘里的「打开本地验收 zip…」可以直接打开本机的包。
 5. 挂接成功后，Grok Bot 窗口右侧会出现「Bot 透视」标签，点开即可查看所有 Bot 的只读运行状态；可用面板上的关闭按钮或再次点击标签收起。
 6. 托盘菜单还可以开关功能、打开日志目录、设置（默认关闭的）开机启动，以及退出。退出本应用不会关闭 Grok Bot。
 
@@ -117,7 +117,7 @@ electron/preview-core.mjs         解压（防 zip slip）、review.json、桥�
 electron/preload-preview.cjs      contextBridge：外壳页的 window.gxPreviewHost
 features/preview/
   feature.mjs                     接「打开预览」点击，按来源链拿 zip，交给 electron/preview.mjs
-  desktop.mjs                     官方 window.desktop.readAttachmentBytes / downloadAttachment 的 evaluate 脚本与解析（纯函数）
+  desktop.mjs                     官方媒体协议分块读取、readAttachmentBytes / downloadAttachment 的脚本与解析（纯函数）
   inject.js                       在 .zip 附件卡下方插入「▶ 打开预览」
 features/bot-inspector/
   feature.mjs                     功能清单（无主进程消息）
@@ -133,11 +133,12 @@ features/bot-inspector/
 2. **取 zip**（`features/preview/feature.mjs` + `features/preview/desktop.mjs`，按顺序，第一个成功即停）：
    1. 外部注册的 hook（`registerZipSource`）；
    2. `local-path`：来源是本机已存在的 `.zip` 绝对路径（例如输入框里刚附上的本地文件），直接读，不调官方接口；
-   3. `desktop-read`：**用户已允许调用 Grok Bot 官方 preload 暴露的 `window.desktop.*`。** 主进程在你点击后用 CDP `Runtime.evaluate` 在页面里调用 `desktop.readAttachmentBytes({ path, maxBytes, agentId?, viewSlot })`，bytes 在页面里转成 base64 回传（不经过 64 KB 的 binding）。`viewSlot` 取 `SandClientProvider` value 上的 `accountSlot`（和官方 UI 一样），`agentId` 从卡片祖先 props 里能拿就拿。**对 `.zip` 这个接口会因为预览类型门禁直接返回 `null`**（zip 不属于 pdf / 表格 / docx / 文本 / json / markdown / html），我们不会伪造扩展名绕过；超过 25 MB 返回 `too-large` 时也只记日志、继续往下走；
-   4. `desktop-download`：来源像官方附件路径（POSIX / Windows 绝对路径或 `file://`，不是公开 https）且本机还没有时，调用 `desktop.downloadAttachment({ path, suggestedName })`。**它会弹一次系统保存框**（默认在「下载」目录），确认后我们在「下载」目录里找 3 分钟内刚落盘的同名 zip（含 `name (n).zip`）直接打开；存到了别处就继续走下面的来源；**在保存框里点取消就整条链停下**，不再弹我们自己的文件选择框；
-   5. `cdp-resource`（`Page.getResourceContent`）→ `cdp-network`（`Network.getResponseBody`，只记录 zip 响应）→ `https-fetch`（公开 https，不带凭据）→ `downloads`（「下载」目录里 30 分钟内、大小与卡片相符的同名文件）→ `pick-file`（文件选择框，由你确认）。
+   3. `desktop-chunk`：**用户已允许走客户端内部的附件分块读取。** 主进程在你点击后用 CDP `Runtime.evaluate` 让页面按 4 MB 的 Range 去拉官方媒体协议 `sand-media://attachment/…`（必要时带当前账号的媒体令牌），再在本进程把各块拼成完整 zip。**没有保存对话框。** 令牌先从页面里已有的 `sand-media://` 地址刮取，再按当前账号槽推算少量代数，最后试一次不带令牌；第一个请求若 404 就换下一个，成功后锁定。超过 `maxZipBytes` 就停。不经过 64 KB 的 binding，不改 `isAnysphereUser`；
+   4. `desktop-read`：官方 `window.desktop.readAttachmentBytes`。对 `.zip` 会因为预览类型门禁直接返回 `null`（我们不会伪造扩展名绕过）；超过 25 MB 返回 `too-large` 时只记日志、继续往下走；
+   5. `desktop-download`：来源像官方附件路径且本机还没有时，调用 `desktop.downloadAttachment({ path, suggestedName })`。**它会弹一次系统保存框**（默认在「下载」目录），作为媒体协议不可用时的后备；确认后我们在「下载」目录里找 3 分钟内刚落盘的同名 zip；**在保存框里点取消就整条链停下**；
+   6. `cdp-resource`（`Page.getResourceContent`）→ `cdp-network`（`Network.getResponseBody`，只记录 zip 响应）→ `https-fetch`（公开 https，不带凭据）→ `downloads`（「下载」目录里 30 分钟内、大小与卡片相符的同名文件）→ `pick-file`（文件选择框，由你确认）。
 
-   这**不是完全无对话框的一键打开**：消息附件一般要在系统保存框里确认一次；但不用再先手动点卡片自带的下载按钮、再点「打开预览」。只走 `window.desktop` 这个官方面，不调 `readAttachmentChunk` 等未暴露的内部 IPC 或后端 RPC，不改 `isAnysphereUser`，不读 cookie / 令牌，账号槽不写进日志，附件路径在日志里只留文件名。
+   消息附件的首选路径是**无弹窗一键打开**（官方媒体协议）。这条路径依赖官方协议和媒体令牌，**官方升级可能打断**；失败时回退到 `downloadAttachment`，那时会弹一次系统保存框。不读 cookie / 登录令牌，账号槽和媒体令牌不写进日志，附件路径在日志里只留文件名。
 3. **打开**：zip 解到状态目录 `features/preview/opened/<token>/`（窗口关闭即删除；先拒绝绝对路径、`..`、符号链接、加密条目、ZIP64，限制压缩包 / 解压后 / 单文件大小和条目数，CRC 校验）。本地 HTTP 服务只绑 `127.0.0.1` 的随机端口，只认 `Host: 127.0.0.1:<port>`，路径带 128 位随机 token，最后一个窗口关掉就停止。窗口用独立的内存分区（不落 cookie / storage）、`sandbox` + `contextIsolation`，`webRequest` 只放行本服务的地址（包里引用的外网资源会被拦下），禁止新窗口和外跳导航。
 4. **隔离**：外壳页只有一个整窗 `<iframe sandbox="allow-scripts allow-forms allow-modals">`，**没有 `allow-same-origin`**，预览页是不透明源，访问不到外壳、`gxPreviewHost`、cookie 或 storage。
 5. **桥接**：服务在下发 `review.json` 的 `entry`（默认 `index.html`）时临时插入一段 `<script data-grokbotx-preview-bridge>`，定义 `window.__grokbotXPreview = { v: 1, autoSend: false, submitFeedback }`；zip 里的文件不被修改，其他 HTML 不注入。`submitFeedback` 用 `postMessage` 交给外壳，外壳经 preload / IPC 交给主进程，返回 Promise（成功 resolve `{ mode, dir, files }`，失败 reject）。
@@ -165,7 +166,7 @@ features/bot-inspector/
 - **官方升级可能打断功能。** 注入依赖 `.sand-media-viewer__download` 等页面结构，官方改版后按钮可能不再出现。找不到下载按钮时不会显示「编辑」。
 - **交互预览验收会运行包里的脚本。** 只打开你信任的验收包。它跑在隔离窗口的 sandbox iframe 里（不透明源、内存分区、只允许访问本机临时服务），拿不到 Grok Bot 的页面、会话或 grokbot-x 的接口；但预览运行期间，本机其他进程在知道随机端口和 token 的前提下可以读到这个包的文件。服务只绑 127.0.0.1，不要转发。
 - **反馈只进剪贴板。** grokbot-x 不代画表单，也不会把反馈自动发进对话；粘贴前请自己看一眼剪贴板内容。反馈目录在状态目录下，不会自动清理，托盘「打开验收反馈目录」可查看。
-- **会调用官方 `window.desktop.*`（用户已允许）。** 只在你点「打开预览」后调用 `readAttachmentBytes` 和 `downloadAttachment`，后者一定弹系统保存框。依赖的参数形态和 `accountSlot` 位置来自 1.0.1 解包代码，官方改版后可能失效，失效时会退回后面的来源。
+- **会经官方媒体协议读取附件（用户已允许）。** 点「打开预览」后，优先在客户端页面里按块拉取 `sand-media://attachment/…`，无保存框。官方升级可能改变协议、令牌或账号槽的位置，那时会退回到 `downloadAttachment`（弹一次系统保存框）或文件选择框。不改 `isAnysphereUser`。
 - **附件识别依赖官方 DOM。** `.sand-file-card`、`[data-attachment-card]` 和卡片 props 的字段名来自对官方 1.0.1 渲染包的静态分析，官方改版后按钮可能不出现或拿不到来源，这时仍可用托盘「打开本地验收 zip…」。
 - **许可证。** grokbot-x 自己的代码是 MIT。派生的图片批注编辑器来自 EditHere，是 PolyForm Noncommercial，仅限个人或内部非商业使用。Electron、Node.js、ws 遵循各自许可证。
 - 本应用的 Electron 已关闭 `RunAsNode` 与 `EnableNodeCliInspectArguments`，并打开 asar 完整性校验。这只约束 grokbot-x 自身，不会改官方客户端。

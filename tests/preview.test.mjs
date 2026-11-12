@@ -13,9 +13,12 @@ import {
   parseSizeLabel, sizeMatches, normalizeRequest, sanitizeName,
 } from '../electron/preview-core.mjs';
 import {
-  PREVIEW_BYTE_CAP, readBytesExpr, downloadExpr, evalValue, parseReadResult, looksLikeAttachmentPath,
+  PREVIEW_BYTE_CAP, RANGE_CHUNK, readBytesExpr, downloadExpr, evalValue, parseReadResult, looksLikeAttachmentPath,
   localPathOf, rescanDownloads, desktopSources, cancelledError, scrub,
+  mediaAccountToken, attachmentUrl, tokenCandidates, SCRAPE_TOKENS, rangeFetchExpr, parseRangeResult,
+  fetchAttachmentChunks, clientCtxExpr,
 } from '../features/preview/desktop.mjs';
+import { createHash } from 'node:crypto';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const tmp = (p) => fs.mkdtempSync(path.join(os.tmpdir(), `gx-preview-${p}-`));
@@ -533,7 +536,7 @@ test('desktop sources: read null → download saved → rescan Downloads finds t
   ]);
   assert.equal(r.method, 'desktop-download');
   assert.ok(r.buffer.equals(zip));
-  assert.deepEqual(r.tried, ['desktop-read:skip', 'desktop-download:ok']);
+  assert.deepEqual(r.tried, ['desktop-chunk:skip', 'desktop-read:skip', 'desktop-download:ok']);
   assert.deepEqual(page.calls.map((c) => c.method), ['readAttachmentBytes', 'downloadAttachment']);
   assert.deepEqual(page.calls[1].args, { path: '/home/box/out/demo-preview.zip', suggestedName: 'demo-preview.zip' });
   assert.equal(picked, false);
@@ -547,7 +550,7 @@ test('desktop sources: readAttachmentBytes bytes are used directly; too-large fa
   assert.equal(direct.calls.length, 1);
   const big = fakePage({ readAttachmentBytes: () => ({ kind: 'too-large', size: 99e6 }), downloadAttachment: () => false });
   await assert.rejects(resolveZip({ name: 'a.zip', source: '/home/box/a.zip' }, desktopSources(chainDeps(big, { downloads: tmp('d2') }))),
-    (e) => e.abort === true && e.tried.join() === 'desktop-read:skip,desktop-download:用户取消');
+    (e) => e.abort === true && e.tried.join() === 'desktop-chunk:skip,desktop-read:skip,desktop-download:用户取消');
 });
 
 test('desktop sources: user cancels the save dialog → chain stops, our picker never opens', async () => {
@@ -570,15 +573,17 @@ test('desktop sources: saved but not in Downloads → falls back to later source
     { name: 'pick-file', fetch: () => zip },
   ]);
   assert.equal(r.method, 'pick-file');
-  assert.deepEqual(r.tried, ['desktop-read:skip', 'desktop-download:skip', 'pick-file:ok']);
+  assert.deepEqual(r.tried, ['desktop-chunk:skip', 'desktop-read:skip', 'desktop-download:skip', 'pick-file:ok']);
 });
 
 test('desktop sources skip https sources and paths that already exist locally', async () => {
   const page = fakePage({ readAttachmentBytes: () => { throw new Error('must not call'); }, downloadAttachment: () => { throw new Error('must not call'); } });
   const srcs = desktopSources(chainDeps(page, { downloads: tmp('d5'), exists: () => true }));
+  assert.equal(srcs[0].name, 'desktop-chunk');
   assert.equal(await srcs[0].fetch({ name: 'a.zip', source: 'https://example.com/a.zip' }), null);
   assert.equal(await srcs[1].fetch({ name: 'a.zip', source: 'https://example.com/a.zip' }), null);
-  assert.equal(await srcs[1].fetch({ name: 'a.zip', source: '/home/box/a.zip' }), null);
+  assert.equal(await srcs[2].fetch({ name: 'a.zip', source: 'https://example.com/a.zip' }), null);
+  assert.equal(await srcs[2].fetch({ name: 'a.zip', source: '/home/box/a.zip' }), null);
   assert.equal(page.calls.length, 0);
 });
 
@@ -590,4 +595,226 @@ test('normalizeRequest keeps a safe reqId only', () => {
 test('scrub removes paths from logged client errors', () => {
   assert.equal(scrub('ENOENT: open /home/box/secret/a.zip failed'), 'ENOENT: open … failed');
   assert.equal(scrub('bad C:\\Users\\me\\a.zip'), 'bad …');
+  assert.equal(scrub('token account=AbCdEfGhIjKlMnOpQrStUv in url'), 'token account=… in url');
+});
+
+// ---- 官方媒体协议（无弹窗分块读取） ----
+
+function mediaServer({ data, admit, requests = [] }) {
+  return async (url, opts = {}) => {
+    const range = (opts.headers && (opts.headers.Range || opts.headers.range)) || '';
+    requests.push({ url, range, token: (() => { try { return new URL(url).searchParams.get('account'); } catch { return undefined; } })() });
+    const u = new URL(url);
+    if (u.protocol !== 'sand-media:' || u.host !== 'attachment') return new Response(null, { status: 400 });
+    const filePath = decodeURIComponent(u.pathname.replace(/^\/+/, ''));
+    const token = u.searchParams.get('account');
+    if (!admit(token, filePath)) return new Response(null, { status: 404 });
+    const m = /^bytes=(\d+)-(\d+)$/.exec(range);
+    const start = m ? Number(m[1]) : 0;
+    const end = m ? Math.min(Number(m[2]), data.length - 1) : data.length - 1;
+    const slice = data.subarray(start, end + 1);
+    return new Response(slice, {
+      status: 206,
+      headers: {
+        'content-type': 'application/zip',
+        'content-length': String(slice.length),
+        'content-range': `bytes ${start}-${end}/${data.length}`,
+        'accept-ranges': 'bytes',
+      },
+    });
+  };
+}
+
+function mediaPage({ data = Buffer.alloc(0), admit = () => true, imgs = [], requests = [] } = {}) {
+  const document = {
+    querySelectorAll: () => imgs.map((src) => ({ currentSrc: src, src, href: src, srcset: '' })),
+    querySelector: () => null,
+    body: { querySelectorAll: () => [] },
+  };
+  const ctx = {
+    fetch: mediaServer({ data, admit, requests }),
+    document, URL, Uint8Array, String, Number, Promise, JSON, btoa, Response, Headers,
+  };
+  return {
+    requests,
+    run: async (expr) => ({ result: { value: JSON.parse(JSON.stringify(await vm.runInNewContext(expr, ctx))) } }),
+  };
+}
+
+function withMediaEvaluate(page, media) {
+  return async (expr, timeout) => {
+    if (typeof expr === 'string' && (expr.includes('gx-range-fetch') || expr.includes('gx-scrape-tokens'))) {
+      return media.run(expr);
+    }
+    return page.run(expr);
+  };
+}
+
+test('attachmentUrl encodes the path and only adds account when a token is present', () => {
+  assert.equal(attachmentUrl('/home/box/a.zip', 'Tok_en-0123456789ab'), 'sand-media://attachment/%2Fhome%2Fbox%2Fa.zip?account=Tok_en-0123456789ab');
+  assert.equal(attachmentUrl('/home/box/a.zip', null), 'sand-media://attachment/%2Fhome%2Fbox%2Fa.zip');
+  assert.equal(attachmentUrl('/home/box/a.zip', ''), 'sand-media://attachment/%2Fhome%2Fbox%2Fa.zip');
+  const dec = decodeURIComponent(new URL(attachmentUrl('/tmp/my file.zip', null)).pathname.replace(/^\/+/, ''));
+  assert.equal(dec, '/tmp/my file.zip');
+  assert.equal(RANGE_CHUNK, 4 * 1024 * 1024);
+});
+
+test('mediaAccountToken matches the official Node formula and Web Crypto', async () => {
+  const expected = createHash('sha256').update('sand-media\0slot-1\0'+'0', 'utf8').digest('base64url').slice(0, 22);
+  // generation 0 stringifies to "0"
+  assert.equal(mediaAccountToken('slot-1', 0), expected);
+  assert.equal(mediaAccountToken('slot-1', 0).length, 22);
+  assert.notEqual(mediaAccountToken('slot-1', 0), mediaAccountToken('slot-1', 1));
+  const web = await crypto.subtle.digest('SHA-256', Buffer.from('sand-media\0slot-1\0'+'0', 'utf8'));
+  assert.equal(mediaAccountToken('slot-1', 0), Buffer.from(web).toString('base64url').slice(0, 22));
+  assert.equal(mediaAccountToken('slot-1', 2), createHash('sha256').update(`sand-media\0slot-1\0${2}`, 'utf8').digest('base64url').slice(0, 22));
+});
+
+test('tokenCandidates: scraped first, then generation 0/1/2, then no token; duplicates dropped', () => {
+  const slot = 'slot-1';
+  const scraped = mediaAccountToken(slot, 9); // 22-char dummy already on the page
+  const c = tokenCandidates({ scraped: [scraped, scraped, 'nope', 1], slot });
+  assert.deepEqual(c, [
+    scraped,
+    mediaAccountToken(slot, 0),
+    mediaAccountToken(slot, 1),
+    mediaAccountToken(slot, 2),
+    null,
+  ]);
+  // 刮到的正好是 gen 0：不重复
+  const g0 = mediaAccountToken(slot, 0);
+  assert.deepEqual(tokenCandidates({ scraped: [g0], slot }), [g0, mediaAccountToken(slot, 1), mediaAccountToken(slot, 2), null]);
+  assert.deepEqual(tokenCandidates({ scraped: [], slot: null }), [null]);
+});
+
+test('SCRAPE_TOKENS reads account= from existing sand-media:// URLs', async () => {
+  const tok = mediaAccountToken('slot-1', 0);
+  const media = mediaPage({
+    imgs: [
+      `sand-media://image/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?account=${tok}`,
+      'https://example.com/x.png',
+      'sand-media://image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      `sand-media://attachment/%2Ftmp%2Fa.png?account=${tok}`,
+    ],
+  });
+  assert.deepEqual(evalValue(await media.run(SCRAPE_TOKENS)), [tok]);
+});
+
+test('first Range 404 switches token, then later ranges stay locked', async () => {
+  const data = Buffer.from('abcdefghijklmnopqrst'); // 20 bytes
+  const bad = mediaAccountToken('s', 0);
+  const good = mediaAccountToken('s', 1);
+  const requests = [];
+  const media = mediaPage({ data, admit: (t) => t === good, requests });
+  const out = await fetchAttachmentChunks({
+    evaluate: (expr) => media.run(expr),
+    path: '/home/box/a.zip',
+    tokens: [bad, good, mediaAccountToken('s', 2), null],
+    maxBytes: 1000,
+    chunkSize: 8,
+  });
+  assert.ok(out.equals(data));
+  assert.ok(requests.length >= 3);
+  assert.equal(requests[0].token, bad);
+  assert.equal(requests[0].range, 'bytes=0-7');
+  assert.deepEqual(requests.slice(1).map((r) => r.token), requests.slice(1).map(() => good));
+  assert.deepEqual(requests.slice(1).map((r) => r.range), ['bytes=0-7', 'bytes=8-15', 'bytes=16-19']);
+});
+
+test('fetchAttachmentChunks concatenates ranges into the original bytes', async () => {
+  const zip = makeZip([{ name: 'index.html', data: 'hello-chunk-body-xxx' }]);
+  const media = mediaPage({ data: zip, admit: (t) => t == null });
+  const out = await fetchAttachmentChunks({
+    evaluate: (expr) => media.run(expr),
+    path: '/home/box/a.zip',
+    tokens: [null],
+    maxBytes: zip.length,
+    chunkSize: 7,
+  });
+  assert.ok(out.equals(zip));
+  const one = await fetchAttachmentChunks({
+    evaluate: (expr) => media.run(expr),
+    path: '/home/box/a.zip',
+    tokens: [null],
+    maxBytes: zip.length,
+    chunkSize: RANGE_CHUNK,
+  });
+  assert.ok(one.equals(zip));
+});
+
+test('fetchAttachmentChunks stops when totalSize exceeds maxBytes', async () => {
+  const data = Buffer.alloc(40, 7);
+  const media = mediaPage({ data, admit: () => true });
+  await assert.rejects(fetchAttachmentChunks({
+    evaluate: (expr) => media.run(expr),
+    path: '/home/box/a.zip',
+    tokens: [null],
+    maxBytes: 16,
+    chunkSize: 8,
+  }), /too-large/);
+  // 第一块还没超过上限、后续累计会超过时也要停
+  const big = Buffer.alloc(30, 1);
+  const m2 = mediaPage({ data: big, admit: () => true });
+  await assert.rejects(fetchAttachmentChunks({
+    evaluate: (expr) => m2.run(expr),
+    path: '/home/box/a.zip',
+    tokens: [null],
+    maxBytes: 20,
+    chunkSize: 8,
+  }), /too-large/);
+});
+
+test('desktop-chunk skips non-attachment (https) sources', async () => {
+  let evals = 0;
+  const srcs = desktopSources({
+    evaluate: async () => { evals++; return { result: { value: null } }; },
+    exists: () => false,
+    stat: fs.statSync,
+    readFile: () => null,
+    downloadsDir: () => tmp('cx'),
+    maxBytes: 1000,
+  });
+  assert.equal(srcs[0].name, 'desktop-chunk');
+  assert.equal(await srcs[0].fetch({ name: 'a.zip', source: 'https://example.com/a.zip' }), null);
+  assert.equal(evals, 0);
+});
+
+test('resolveZip uses desktop-chunk for a message attachment path and does not call downloadAttachment', async () => {
+  const zip = makeZip([{ name: 'index.html', data: 'from-chunk' }]);
+  const slot = 'slot-1';
+  const tok = mediaAccountToken(slot, 0);
+  const page = fakePage({
+    readAttachmentBytes: () => { throw new Error('must not read'); },
+    downloadAttachment: () => { throw new Error('must not download'); },
+  }, { slot });
+  const media = mediaPage({
+    data: zip,
+    admit: (t) => t === tok,
+    imgs: [`sand-media://image/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?account=${tok}`],
+  });
+  const r = await resolveZip(
+    { name: 'a.zip', source: '/home/box/out/a.zip', reqId: 'r1' },
+    desktopSources({ ...chainDeps(page, { downloads: tmp('chok') }), evaluate: withMediaEvaluate(page, media), maxBytes: 10 * 1024 * 1024 }),
+  );
+  assert.equal(r.method, 'desktop-chunk');
+  assert.ok(r.buffer.equals(zip));
+  assert.deepEqual(r.tried, ['desktop-chunk:ok']);
+  assert.equal(page.calls.length, 0);
+});
+
+test('resolveZip falls back when desktop-chunk gets 404 from every token', async () => {
+  const zip = makeZip([{ name: 'index.html', data: 'fallback' }]);
+  const downloads = tmp('chfb');
+  const page = fakePage({
+    readAttachmentBytes: () => null,
+    downloadAttachment: () => { fs.writeFileSync(path.join(downloads, 'a.zip'), zip); return true; },
+  }, { slot: 'slot-1' });
+  const media = mediaPage({ data: zip, admit: () => false });
+  const r = await resolveZip(
+    { name: 'a.zip', source: '/home/box/a.zip', reqId: 'r1' },
+    desktopSources({ ...chainDeps(page, { downloads }), evaluate: withMediaEvaluate(page, media), maxBytes: 10 * 1024 * 1024 }),
+  );
+  assert.equal(r.method, 'desktop-download');
+  assert.ok(r.buffer.equals(zip));
+  assert.deepEqual(r.tried, ['desktop-chunk:skip', 'desktop-read:skip', 'desktop-download:ok']);
 });

@@ -61,3 +61,9 @@ Official upgrades can still rename these classes; the button is hidden when the 
 ## Single-instance lock
 
 Packaged builds call `requestSingleInstanceLock()` and quit if they are not the primary instance. Starting a second copy against the same user-data directory will not keep a second DevTools port open. grokbot-x therefore attaches to the already-running process when it already has a loopback debug port, and otherwise asks before restarting it.
+
+## 交互预览验收如何取附件
+
+用户已允许 grokbot-x 经官方媒体协议读取消息里的验收 zip，以便**无弹窗打开**。实现上是在官方渲染进程里对 `sand-media://attachment/…` 做分块 Range 请求（必要时带当前账号的媒体令牌），由 grokbot-x 主进程拼接；不改 `isAnysphereUser`，也不把令牌写进日志。
+
+官方升级可能改变协议、令牌或页面结构。失败时 `features/preview` 会退回到 `window.desktop.downloadAttachment`（弹一次系统保存框），再不行就让用户自己选文件。本节结论来自对 1.0.1 安装包的静态分析，**没有在真实登录的客户端上验证过这条路径**。

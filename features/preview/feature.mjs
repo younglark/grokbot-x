@@ -4,14 +4,15 @@
 // 取 zip 的顺序（详见 README）：
 //   1. 外部注册的取文件 hook（registerZipSource）
 //   2. local-path：卡片里带的路径就是本机已存在的 .zip（例如输入框里刚附上的本地文件）
-//   3. desktop-read：官方 window.desktop.readAttachmentBytes（用户已允许；zip 预期因预览类型门禁返回 null）
-//   4. desktop-download：官方 window.desktop.downloadAttachment，弹一次系统保存框；保存后回扫「下载」目录。
-//      用户取消 → 整条链停下，不再弹我们的文件选择框
-//   5. cdp-resource / cdp-network：附件来源是 URL 且渲染进程已经加载过（资源缓存 / 网络响应体）
-//   6. https-fetch：公开 https 地址，不带任何凭据
-//   7. downloads：「下载」目录里 30 分钟内的同名文件
-//   8. pick-file：弹出文件选择框，默认定位到 下载目录/<name>，由用户确认
-// 只走 window.desktop 这个官方 preload 面；不调 readAttachmentChunk 等内部 IPC 或后端 RPC，不读 cookie/令牌。
+//   3. desktop-chunk：页面 fetch 官方媒体协议（sand-media://attachment/…），按 4MB Range 拉取，主进程拼接。无保存框。
+//   4. desktop-read：官方 window.desktop.readAttachmentBytes（zip 预期因预览类型门禁返回 null）
+//   5. desktop-download：官方 window.desktop.downloadAttachment，弹一次系统保存框；保存后回扫「下载」目录。
+//      用户取消 → 整条链停下，不再弹我们的文件选择框。作 desktop-chunk 的后备。
+//   6. cdp-resource / cdp-network：附件来源是 URL 且渲染进程已经加载过（资源缓存 / 网络响应体）
+//   7. https-fetch：公开 https 地址，不带任何凭据
+//   8. downloads：「下载」目录里 30 分钟内的同名文件
+//   9. pick-file：弹出文件选择框，默认定位到 下载目录/<name>，由用户确认
+// 不抢 coordinatorPort，不走隐藏世界 ipcRenderer，不伪造扩展名，不改 isAnysphereUser，不读 cookie/令牌。
 import fs from 'node:fs';
 import path from 'node:path';
 import { openPreviewZip, pickZipFile, downloadsDir, previewLimits, notifyPreview } from '../../electron/preview.mjs';
