@@ -14,6 +14,7 @@ import {
   validateFilesPayload, validateCopyText, validateCopyFiles, validateImagePayload,
   exportStamp, imageInfo, fillFeedbackImagePaths,
 } from './edithere-ipc.mjs';
+import { createWaitReady, createEditorSession } from './editor-session.mjs';
 
 export const SCHEME = 'gx-edithere';
 export const EDITOR_URL = `${SCHEME}://app/editor.html`;
@@ -209,22 +210,76 @@ function lockNavigation(wc) {
 }
 
 function waitReady(wc, ms = 20000) {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      ipcMain.removeListener('edithere:ready', onReady);
-      reject(new Error('editor page did not become ready'));
-    }, ms);
-    function onReady(event) {
-      if (event.sender !== wc) return;
-      clearTimeout(timer);
-      ipcMain.removeListener('edithere:ready', onReady);
-      resolve(true);
-    }
-    ipcMain.on('edithere:ready', onReady);
+  return createWaitReady({
+    timeoutMs: ms,
+    subscribe(onReady) {
+      const handler = (event) => { if (event.sender === wc) onReady(); };
+      ipcMain.on('edithere:ready', handler);
+      return () => ipcMain.removeListener('edithere:ready', handler);
+    },
   });
 }
 
-function createWindow() {
+async function queryDirty(w) {
+  if (!w || w.isDestroyed()) return false;
+  try {
+    return !!(await w.webContents.executeJavaScript(
+      '!!(globalThis.GrokbotXEditorHooks&&GrokbotXEditorHooks.isDirty&&GrokbotXEditorHooks.isDirty())',
+      true,
+    ));
+  } catch {
+    // A failed query must still present a close prompt rather than freeze the window.
+    return true;
+  }
+}
+
+async function confirmClose(w) {
+  const parent = w && !w.isDestroyed() ? w : null;
+  const { response } = await dialog.showMessageBox(parent, {
+    type: 'question',
+    buttons: ['关闭', '取消'],
+    defaultId: 1,
+    cancelId: 1,
+    noLink: true,
+    title: '图片批注',
+    message: '当前编辑还没有保存。要关闭窗口吗？',
+    detail: '关闭后未保存的批注会丢失。已经导出的文件不受影响。',
+  });
+  return response === 0;
+}
+
+const editorSession = createEditorSession({
+  createWindow() {
+    const w = buildEditorWindow();
+    win = w;
+    w.on('close', (e) => {
+      log.info(`editor close requested allow=${editorSession.willAllowClose()}`);
+      if (editorSession.willAllowClose()) return;
+      e.preventDefault();
+      editorSession.requestClose().then((d) => log.info(`close decision ${JSON.stringify({ close: d.close, prompted: d.prompted, error: d.error && d.error.message })}`)).catch((err) => log.error(`close prompt failed: ${err.message}`));
+    });
+    return w;
+  },
+  isDestroyed(w) { return !w || w.isDestroyed(); },
+  destroy(w) {
+    if (win === w) win = null;
+    try { if (w && !w.isDestroyed()) w.destroy(); } catch { /* already gone */ }
+  },
+  close(w) {
+    try { if (w && !w.isDestroyed()) w.close(); } catch { /* already gone */ }
+  },
+  load(w) { return w.loadURL(EDITOR_URL); },
+  waitReady(w) { return waitReady(w.webContents); },
+  queryDirty,
+  confirmClose,
+  show(w) {
+    if (w.isMinimized()) w.restore();
+    w.show();
+    w.focus();
+  },
+});
+
+function buildEditorWindow() {
   const w = new BrowserWindow({
     width: 1280,
     height: 860,
@@ -249,29 +304,18 @@ export async function openEditor(payload) {
   registerEditorIpc();
   const v = validateImagePayload(payload);
   if (!v.ok) throw new Error(v.error);
-  const info = {
+  pendingImage = {
     dataUrl: v.dataUrl,
     name: v.name,
     width: v.width,
     height: v.height,
     exportDir: hostInfo.exportDir || '',
   };
-  pendingImage = info;
-  const mustReload = !win || win.isDestroyed();
-  if (mustReload) {
-    win = createWindow();
-    const ready = waitReady(win.webContents);
-    await win.loadURL(EDITOR_URL);
-    await ready;
-  } else {
-    // A previous session cannot accept another loadAgentImage call; reload.
-    const ready = waitReady(win.webContents);
-    await win.loadURL(EDITOR_URL);
-    await ready;
-  }
-  if (win.isMinimized()) win.restore();
-  win.show();
-  win.focus();
+  // Always replace the current window. A second 「编辑」 click is an explicit
+  // request to load a new image; do not let a beforeunload guard or a same-URL
+  // reload hang, and serialize callers so waitReady listeners cannot stack.
+  const opened = await editorSession.open();
+  if (opened) win = opened;
   log.info(`loaded ${v.name} into annotation window`);
 }
 
@@ -316,7 +360,7 @@ export function lastExport() {
 }
 
 export function closeEditor() {
-  if (win && !win.isDestroyed()) win.close();
+  editorSession.forceClose();
   win = null;
   pendingImage = null;
 }

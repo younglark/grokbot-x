@@ -113,7 +113,12 @@ async function captureImage(ctx, sessionId, d) {
 }
 
 async function openInEditor(ctx, dataUrl, name) {
-  await openEditor({ dataUrl, name });
+  try {
+    await openEditor({ dataUrl, name });
+  } catch (e) {
+    ctx.log.error(`open editor failed: ${e.message}`);
+    throw e;
+  }
 }
 
 function stamp() {

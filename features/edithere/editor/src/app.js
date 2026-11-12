@@ -1062,7 +1062,9 @@
   window.addEventListener('edithere:layout',()=>{if(session&&fitMode)viewportFit();});
   const fitObserver=new ResizeObserver(()=>{if(session&&fitMode)viewportFit();});
   for(const selector of ['#viewport','.header','.page-context','.media-bar','.view-controls','.tools','.status-bar','#video-controls','.set-bar','.sidebar','.utility-dock']){const element=document.querySelector(selector);if(element)fitObserver.observe(element);}
-  window.addEventListener('beforeunload',event=>{if(dirty){event.preventDefault();event.returnValue='';}});
+  // The Electron host handles close with a native dialog. beforeunload has no
+  // usable confirm UI on this desktop and also blocks the next 「编辑」 reload.
+  if(!globalThis.grokbotX)window.addEventListener('beforeunload',event=>{if(dirty){event.preventDefault();event.returnValue='';}});
   // Editing stays independent of HTTP and MCP transports. A draft is considered
   // saved only when the transport acknowledges this exact editing revision.
   globalThis.EditHereWeb = {
@@ -1183,5 +1185,6 @@
     saveFeedback(options) {saveJsonFile(options||{});},
     copyJsonFiles,
     copyJson,
+    isDirty() {return !!dirty;},
   };
 })();
