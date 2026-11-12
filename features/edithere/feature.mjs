@@ -1,5 +1,5 @@
 // features/edithere: capture the previewed image and open it in an in-app
-// EditHere BrowserWindow (custom scheme, no system Chrome, no HTTP server).
+// annotation BrowserWindow (forked EditHere web sources; custom scheme, no HTTP).
 import fs from 'node:fs';
 import path from 'node:path';
 import { openEditor, closeEditor } from '../../electron/editor.mjs';
@@ -141,7 +141,7 @@ async function handleOpen(ctx, sessionId, d) {
   ctx.log.info(`captured via ${method} ${info.fmt} ${info.w}x${info.h} bytes=${buf.length} matchesNatural=${match} tried=[${tried.join(', ')}]${saved ? ` saved=${saved}` : ''}`);
   if (!info.mime || !/^image\/(png|jpeg|webp|bmp|gif)$/.test(info.mime)) throw new Error(`unsupported image format ${info.fmt}`);
   await openInEditor(ctx, `data:${info.mime};base64,${buf.toString('base64')}`, name);
-  ctx.log.info('image loaded into EditHere');
+  ctx.log.info('image loaded into annotation window');
 }
 
 export default {
@@ -150,8 +150,9 @@ export default {
   pageScript: 'inject.js',
 
   async init(ctx) {
-    if (!fs.existsSync(path.join(ctx.featureDir, 'vendor', 'EditHere.html'))) throw new Error('vendor/EditHere.html missing');
-    ctx.log.info('EditHere will open in an in-app BrowserWindow (gx-edithere://)');
+    const built = path.join(ctx.featureDir, 'build', 'editor.html');
+    if (!fs.existsSync(built)) throw new Error('features/edithere/build/editor.html missing; run npm run build:editor');
+    ctx.log.info('annotation editor will open in an in-app BrowserWindow (gx-edithere://)');
   },
 
   async onAttach(ctx, { sessionId }) {

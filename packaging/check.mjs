@@ -8,7 +8,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const files = [];
 function walk(d) {
   for (const n of fs.readdirSync(d)) {
-    if (n === 'node_modules' || n === 'release' || n === '.cache' || n === '.git') continue;
+    if (n === 'node_modules' || n === 'release' || n === '.cache' || n === '.git' || n === 'build') continue;
     const p = path.join(d, n);
     const st = fs.statSync(p);
     if (st.isDirectory()) walk(p);

@@ -14,8 +14,8 @@ function makeButton(download) {
   b.type = 'button';
   b.setAttribute(MARK, FEATURE);
   b.setAttribute('data-edithere', '');
-  b.title = 'EditHere';
-  b.setAttribute('aria-label', 'EditHere');
+  b.title = '在 grokbot-x 中打开图片批注';
+  b.setAttribute('aria-label', '打开图片批注');
   b.className = String(download.className || '').replace(/\bsand-media-viewer__download\b/g, 'grokbotx-edithere');
   b.style.cssText = 'min-width:auto;width:auto;padding:0 12px;gap:4px;font-size:13px;line-height:1;cursor:pointer;white-space:nowrap;';
   b.textContent = '✎ 编辑';

@@ -31,7 +31,7 @@ linux:
   icon: assets
   maintainer: grokbot-x <grokbot-x@localhost>
   synopsis: "Unofficial add-on for the Grok Bot desktop client"
-  description: "Attaches to official Grok Bot over a loopback DevTools port. EditHere is PolyForm Noncommercial (noncommercial use only)."
+  description: "Attaches to official Grok Bot over a loopback DevTools port. The bundled picture-annotation editor is a noncommercial fork of EditHere (PolyForm Noncommercial 1.0.0)."
   desktop:
     entry:
       Name: Grok Bot X

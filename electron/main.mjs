@@ -7,7 +7,7 @@ import { makePlatform } from '../core/platform.mjs';
 import { APP_DIR, loadConfig, saveUserConfig, appVersion } from '../core/config.mjs';
 import { createLogger } from '../core/log.mjs';
 import { ensureClient } from './client.mjs';
-import { registerEditorScheme, handleEditorProtocol, closeEditor } from './editor.mjs';
+import { registerEditorScheme, handleEditorProtocol, closeEditor, configureEditor, openImageFile, requestSelfTestExport, exportsRoot } from './editor.mjs';
 
 registerEditorScheme();
 
@@ -58,7 +58,7 @@ function rebuildMenu() {
   for (const name of names) {
     const on = cfgWrap.cfg.features?.[name]?.enabled !== false;
     features.push({
-      label: name === 'edithere' ? 'EditHere 图片编辑' : name,
+      label: name === 'edithere' ? '图片批注（派生自 EditHere）' : name,
       type: 'checkbox',
       checked: on,
       click: () => toggleFeature(name, !on),
@@ -83,7 +83,8 @@ function rebuildMenu() {
     },
     { type: 'separator' },
     { label: '打开日志目录', click: () => shell.openPath(STATE) },
-    { label: `关于 grokbot-x ${appVersion()}`, click: () => dialog.showMessageBox({ type: 'info', title: 'grokbot-x', message: `grokbot-x ${appVersion()}\n非官方 Grok Bot 增强\n调试口仅绑定 127.0.0.1` }) },
+    { label: '打开导出目录', click: () => { const d = exportsRoot(STATE); fs.mkdirSync(d, { recursive: true, mode: 0o700 }); shell.openPath(d); } },
+    { label: `关于 grokbot-x ${appVersion()}`, click: () => dialog.showMessageBox({ type: 'info', title: 'grokbot-x', message: `grokbot-x ${appVersion()}\n非官方 Grok Bot 增强\n图片批注派生自 EditHere，与原作者无隶属关系\n仅限非商业使用\n调试口仅绑定 127.0.0.1` }) },
     { type: 'separator' },
     { label: '退出', click: () => app.quit() },
   ]));
@@ -141,6 +142,41 @@ function tryCreateTray() {
   }
 }
 
+
+function argValue(flag) {
+  const argv = process.argv;
+  const eq = argv.find((a) => a.startsWith(flag + '='));
+  if (eq) return eq.slice(flag.length + 1);
+  const i = argv.indexOf(flag);
+  if (i >= 0 && argv[i + 1] && !String(argv[i + 1]).startsWith('-')) return argv[i + 1];
+  return '';
+}
+
+async function maybeOpenTestImage() {
+  const file = argValue('--open-image');
+  if (!file) return;
+  try {
+    const info = await openImageFile(file);
+    log.info(`--open-image loaded ${info.name} ${info.width}x${info.height}`);
+  } catch (e) {
+    notify('打开测试图片失败', e.message, true);
+    throw e;
+  }
+}
+
+async function maybeSelfTestExport() {
+  try {
+    const result = await requestSelfTestExport();
+    const marker = path.join(STATE, 'self-test-export.json');
+    fs.writeFileSync(marker, JSON.stringify(result, null, 2) + '\n', { mode: 0o600 });
+    log.info(`self-test-export: ${JSON.stringify(result)}`);
+    return result;
+  } catch (e) {
+    notify('测试导出失败', e.message, true);
+    throw e;
+  }
+}
+
 function writePid() {
   const f = path.join(STATE, 'daemon.pid');
   fs.writeFileSync(f, String(process.pid));
@@ -148,12 +184,19 @@ function writePid() {
 
 function watchStopRequest() {
   const f = path.join(STATE, 'stop.request');
+  const exportReq = path.join(STATE, 'self-test-export.request');
   try { fs.unlinkSync(f); } catch { /* none */ }
+  try { fs.unlinkSync(exportReq); } catch { /* none */ }
   scanTimerWatch = setInterval(() => {
     if (fs.existsSync(f)) {
       try { fs.unlinkSync(f); } catch { /* ignore */ }
       log.info('stop.request seen; quitting');
       app.quit();
+    }
+    if (fs.existsSync(exportReq)) {
+      try { fs.unlinkSync(exportReq); } catch { /* ignore */ }
+      log.info('self-test-export.request seen');
+      maybeSelfTestExport().catch((e) => log.error(e.message));
     }
   }, 500);
   scanTimerWatch.unref?.();
@@ -163,9 +206,11 @@ function watchStopRequest() {
 
 if (process.argv.includes('--help') || process.argv.includes('-h')) {
   process.stdout.write(`grokbot-x ${appVersion()} (Electron)
-Usage: grokbot-x [--help] [--version] [--dry-run]
+Usage: grokbot-x [--help] [--version] [--dry-run] [--open-image <png>] [--self-test-export]
   Starts the tray app, attaches to Grok Bot if it already has a loopback DevTools port,
   otherwise wait for the tray action "启动 Grok Bot". DevTools is always bound to 127.0.0.1.
+  --open-image FILE   Open the in-app annotation window with a local image (dev / self-test).
+  --self-test-export  After the editor is open, save feedback into the exports directory.
 `);
   app.exit(0);
 } else if (process.argv.includes('--version')) {
@@ -179,7 +224,7 @@ Usage: grokbot-x [--help] [--version] [--dry-run]
     configDir: plat.configDir(),
     grokBotBin: plat.findGrokBin(cfgWrap.cfg.launcher?.grokBotBin) || null,
     searched: plat.grokCandidates(cfgWrap.cfg.launcher?.grokBotBin),
-    editor: 'in-app BrowserWindow gx-edithere://',
+    editor: 'in-app BrowserWindow gx-edithere://app/editor.html (forked sources, preload IPC)',
     cdpBind: '127.0.0.1',
   };
   process.stdout.write(JSON.stringify(info, null, 2) + '\n');
@@ -200,7 +245,9 @@ if (!gotLock) {
   app.whenReady().then(async () => {
     writePid();
     watchStopRequest();
-    handleEditorProtocol(path.join(APP_DIR, 'features', 'edithere', 'vendor'));
+    const editorBuild = path.join(APP_DIR, 'features', 'edithere', 'build');
+    configureEditor({ stateDir: STATE, buildDir: editorBuild });
+    handleEditorProtocol(editorBuild);
     const hasTray = tryCreateTray();
     if (!hasTray) log.info('continuing headless: will still attach to Grok Bot');
     // Default off; honour a previously saved preference.
@@ -218,6 +265,12 @@ if (!gotLock) {
       log.info('Grok Bot is not running; use the tray menu to start it');
       status = 'disconnected';
       rebuildMenu();
+    }
+    try {
+      await maybeOpenTestImage();
+      if (process.argv.includes('--self-test-export')) await maybeSelfTestExport();
+    } catch (e) {
+      log.error(`startup editor test failed: ${e.message}`);
     }
   });
 }

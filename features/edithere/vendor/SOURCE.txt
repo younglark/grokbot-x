@@ -1,1 +1,0 @@
-EditHere web build vendored from https://github.com/Inginnng/EditHere commit 3dab2c4a1a5952cbd567ec89473112c824e4d790 (2026-11-12 00:29:56 +0800), file web/EditHere.html, unmodified.

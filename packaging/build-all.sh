@@ -7,6 +7,7 @@ cd "$ROOT"
 command -v npm >/dev/null || { echo 'npm is required' >&2; exit 2; }
 if [[ ! -d node_modules/electron ]]; then npm ci || npm install; fi
 export CSC_IDENTITY_AUTO_DISCOVERY=false
+npm run build:editor
 HOST="$(uname -s)"
 case "$HOST" in
   Linux)

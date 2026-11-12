@@ -1,0 +1,44 @@
+/* grokbot-x host chrome and rebrand. EditHere lockups/logos are not used.
+ * The upstream shell uses a fixed header and an absolutely positioned workspace,
+ * so the host bar must be position:fixed as well or it sits under the canvas. */
+.brand { gap: 8px; padding: 0 12px; }
+.brand-wordmark {
+  font-weight: 650;
+  font-size: 14px;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  color: var(--text, inherit);
+}
+.brand-symbol { display: block; width: 28px; height: 28px; border-radius: 6px; }
+.host-bar {
+  position: fixed;
+  top: 68px;
+  left: 16px;
+  z-index: 13;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  width: max-content;
+  max-width: calc(100% - 32px);
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--muted, #5b6573);
+  background: var(--surface, #fff);
+  border: 1px solid color-mix(in srgb, var(--line, #d8dee6) 80%, transparent);
+  border-radius: 12px;
+  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.08);
+  pointer-events: auto;
+}
+.host-bar[hidden] { display: none; }
+.host-bar strong { color: var(--text, inherit); font-weight: 600; }
+.host-bar code { font-size: 11px; }
+.host-sep { opacity: 0.45; }
+.host-bar .host-actions { display: flex; gap: 8px; align-items: center; }
+.host-bar button.quiet, .host-bar button.button {
+  font-size: 12px;
+  padding: 2px 8px;
+}
+@media (max-width: 720px) {
+  .host-bar { left: 10px; right: 10px; max-width: calc(100% - 20px); }
+}
