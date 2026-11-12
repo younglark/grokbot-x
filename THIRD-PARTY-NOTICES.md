@@ -5,6 +5,7 @@
 | EditHere web editor sources (forked, modified) | `features/edithere/editor/` | **PolyForm Noncommercial 1.0.0. NONCOMMERCIAL / personal or internal use only.** Required Notice: Copyright 2026 Inginnng (https://github.com/Inginnng/EditHere). Commercial use needs written permission from the author (inginnng@163.com). The EditHere name and logo are not licensed; this fork ships as grokbot-x「图片批注」and must not be presented as official EditHere. See `editor/LICENSE`, `editor/NOTICE`, `editor/TRADEMARK-POLICY.md`, `editor/UPSTREAM.md`. |
 | Node.js v22.23.5 runtime | `runtime/node/` | MIT and others, see `runtime/node/LICENSE` |
 | ws 8.22.2 | `node_modules/ws/` | MIT, see `node_modules/ws/LICENSE` |
+| electron-updater 6.8.11 | `node_modules/electron-updater/` | MIT, see `node_modules/electron-updater/LICENSE` |
 
 grokbot-x's own code is MIT (see `LICENSE`). Grok Bot itself is not included and is not affiliated with this project.
 

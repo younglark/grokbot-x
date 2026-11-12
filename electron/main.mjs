@@ -6,6 +6,7 @@ import { Kernel } from '../core/kernel.mjs';
 import { makePlatform } from '../core/platform.mjs';
 import { APP_DIR, loadConfig, saveUserConfig, appVersion } from '../core/config.mjs';
 import { createLogger } from '../core/log.mjs';
+import { updateSupport, attachUpdater } from './updater.mjs';
 import { ensureClient } from './client.mjs';
 import { openOfficialClient, restartOfficialClient, clientMenuItems } from './client-actions.mjs';
 import { registerEditorScheme, handleEditorProtocol, closeEditor, configureEditor, openImageFile, requestSelfTestExport, exportsRoot, showEditor, hasEditorWindow, onEditorChange } from './editor.mjs';
@@ -25,6 +26,8 @@ let tray = null;
 let status = 'idle'; // idle | connecting | connected | disconnected
 let lastClient = { port: 0, grokPid: 0, attached: false };
 let scanTimerWatch = null;
+let updaterApi = null;
+let autoUpdaterRef = null;
 
 function notify(title, text, isError = false) {
   log[isError ? 'error' : 'info'](`${title}: ${text.replace(/\n/g, ' ')}`);
@@ -90,6 +93,11 @@ function rebuildMenu() {
     { label: '打开日志目录', click: () => shell.openPath(STATE) },
     { label: '打开导出目录', click: () => { const d = exportsRoot(STATE); fs.mkdirSync(d, { recursive: true, mode: 0o700 }); shell.openPath(d); } },
     { label: `关于 grokbot-x ${appVersion()}`, click: () => dialog.showMessageBox({ type: 'info', title: 'grokbot-x', message: `grokbot-x ${appVersion()}\n非官方 Grok Bot 增强\n图片批注派生自 EditHere，与原作者无隶属关系\n仅限非商业使用\n调试口仅绑定 127.0.0.1` }) },
+    {
+      label: '检查更新',
+      enabled: currentUpdateSupport().ok,
+      click: () => { checkForUpdatesManually(); },
+    },
     { type: 'separator' },
     { label: '退出', click: () => app.quit() },
   ]));
@@ -243,6 +251,66 @@ function watchStopRequest() {
   scanTimerWatch.unref?.();
 }
 
+
+function currentUpdateSupport() {
+  return updateSupport({ isPackaged: app.isPackaged, platform: process.platform, env: process.env });
+}
+
+function unlinkPidIfOurs() {
+  try {
+    if (Number(fs.readFileSync(path.join(STATE, 'daemon.pid'), 'utf8')) === process.pid) {
+      fs.unlinkSync(path.join(STATE, 'daemon.pid'));
+    }
+  } catch { /* ignore */ }
+}
+
+async function quitAndInstallUpdate() {
+  updaterApi?.markInstalling();
+  try { closeEditor({ quitting: true }); } catch { /* ignore */ }
+  if (kernel) {
+    try { await kernel.shutdown(); } catch { /* ignore */ }
+    kernel = null;
+  }
+  unlinkPidIfOurs();
+  autoUpdaterRef?.quitAndInstall();
+}
+
+function checkForUpdatesManually() {
+  const support = currentUpdateSupport();
+  if (!support.ok) {
+    notify('grokbot-x', support.message);
+    return;
+  }
+  if (!updaterApi) {
+    notify('grokbot-x', '更新器尚未就绪，请稍后再试');
+    return;
+  }
+  updaterApi.checkNow({ manual: true });
+}
+
+async function startAutoUpdate() {
+  const support = currentUpdateSupport();
+  if (!support.ok) {
+    log.info(support.message);
+    return;
+  }
+  try {
+    const { autoUpdater } = await import('electron-updater');
+    autoUpdaterRef = autoUpdater;
+    updaterApi = attachUpdater({
+      autoUpdater,
+      notify,
+      dialog,
+      log,
+      onQuitAndInstall: quitAndInstallUpdate,
+    });
+    log.info('auto-update enabled (GitHub Releases)');
+    rebuildMenu();
+  } catch (e) {
+    log.error(`updater load failed: ${e.message}`);
+  }
+}
+
 // ---- boot ----
 
 if (process.argv.includes('--help') || process.argv.includes('-h')) {
@@ -314,6 +382,7 @@ if (!gotLock) {
     } catch (e) {
       log.error(`startup editor test failed: ${e.message}`);
     }
+    await startAutoUpdate();
   });
 }
 
@@ -322,11 +391,19 @@ app.on('will-quit', () => { try { closeEditor({ quitting: true }); } catch { /* 
 app.on('before-quit', async (e) => {
   // The editor window hides on ×; destroy it first so it cannot block quit.
   try { closeEditor({ quitting: true }); } catch { /* ignore */ }
+  const installing = updaterApi?.isInstalling();
   if (kernel && !kernel.stopping) {
     e.preventDefault();
     try { await kernel.shutdown(); } catch { /* ignore */ }
     kernel = null;
-    try { if (Number(fs.readFileSync(path.join(STATE, 'daemon.pid'), 'utf8')) === process.pid) fs.unlinkSync(path.join(STATE, 'daemon.pid')); } catch { /* ignore */ }
-    app.exit(0);
+    unlinkPidIfOurs();
+    if (installing) {
+      // Let electron-updater spawn the installer; do not app.exit().
+      autoUpdaterRef?.quitAndInstall();
+    } else {
+      app.exit(0);
+    }
+    return;
   }
+  unlinkPidIfOurs();
 });

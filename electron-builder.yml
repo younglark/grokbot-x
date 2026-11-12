@@ -18,6 +18,10 @@ files:
 asar: true
 extraMetadata:
   main: electron/main.mjs
+publish:
+  provider: github
+  owner: younglark
+  repo: grokbot-x
 electronFuses:
   runAsNode: false
   enableCookieEncryption: true
@@ -53,6 +57,7 @@ win:
   signAndEditExecutable: false
 nsis:
   oneClick: false
+  perMachine: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
@@ -69,7 +74,7 @@ mac:
       arch: [arm64, x64]
     - target: zip
       arch: [arm64, x64]
-  artifactName: grokbot-x-${version}-mac-${arch}.${ext]
+  artifactName: grokbot-x-${version}-mac-${arch}.${ext}
   category: public.app-category.utilities
 dmg:
   artifactName: grokbot-x-${version}-mac-${arch}.${ext}

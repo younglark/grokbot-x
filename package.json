@@ -1,6 +1,6 @@
 {
   "name": "grokbot-x",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Unofficial Electron add-on for the Grok Bot desktop client (CDP, loopback only)",
@@ -12,13 +12,14 @@
     "start": "node features/edithere/editor/build.mjs && electron .",
     "test": "node features/edithere/editor/build.mjs && node --test tests/*.mjs",
     "check": "node features/edithere/editor/build.mjs && node packaging/check.mjs",
-    "pack": "node features/edithere/editor/build.mjs && electron-builder --dir",
-    "dist": "node features/edithere/editor/build.mjs && electron-builder",
-    "dist:linux": "node features/edithere/editor/build.mjs && electron-builder --linux deb AppImage",
-    "dist:win": "node features/edithere/editor/build.mjs && electron-builder --win nsis",
-    "dist:mac": "node features/edithere/editor/build.mjs && electron-builder --mac dmg zip"
+    "pack": "node features/edithere/editor/build.mjs && electron-builder --dir --publish never",
+    "dist": "node features/edithere/editor/build.mjs && electron-builder --publish never",
+    "dist:linux": "node features/edithere/editor/build.mjs && electron-builder --linux deb AppImage --publish never",
+    "dist:win": "node features/edithere/editor/build.mjs && electron-builder --win nsis --publish never",
+    "dist:mac": "node features/edithere/editor/build.mjs && electron-builder --mac dmg zip --publish never"
   },
   "dependencies": {
+    "electron-updater": "6.8.11",
     "ws": "8.22.2"
   },
   "devDependencies": {

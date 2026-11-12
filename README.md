@@ -10,9 +10,30 @@ Grok Bot 桌面端的非官方 Electron 增强。**不修改官方客户端**：
 
 本项目与 Grok Bot 官方无关，也不受官方支持。
 
-## 安装
+## 一键安装
 
-从 [Releases](https://github.com/younglark/grokbot-x/releases) 下载对应平台的包：
+从 GitHub Release 安装最新稳定版。默认装到当前用户目录，**不需要 sudo / 管理员权限**；不会开启登录自启，也不会附带安装官方 Grok Bot。
+
+Linux / macOS：
+
+```bash
+curl -fsSL https://github.com/younglark/grokbot-x/releases/latest/download/install.sh | bash
+```
+
+Windows（PowerShell）：
+
+```powershell
+irm https://github.com/younglark/grokbot-x/releases/latest/download/install.ps1 | iex
+```
+
+- 第一个带应用内自动更新的版本是 **0.2.0**。已经安装 0.1.0 的用户需要手动装一次 0.2.0，之后才会自动检查并提示更新。
+- 安装包目前**未签名**。Windows 可能出现 SmartScreen 提示；macOS 首次打开请右键点「打开」。
+- Linux 的应用内更新只支持 AppImage（一键安装走的就是 AppImage）。用 `.deb` 安装的需要自行下载新版本。
+- 启动后会检查 GitHub Release，有更新时后台下载，下完再提示重启安装（不会静默重启）。也可在托盘菜单点「检查更新」。
+
+## 手动安装
+
+也可以从 [Releases](https://github.com/younglark/grokbot-x/releases) 下载对应平台的包：
 
 | 平台 | 包 |
 |---|---|
@@ -72,6 +93,7 @@ GROK_BOT_BIN=/path/to/grok-bot GROK_BOT_CDP_PORT=29229 grokbot-x
 
 ```
 electron/main.mjs                 Electron 主进程：单实例、托盘、生命周期
+electron/updater.mjs              应用内自动更新（仅打包版；Linux 限 AppImage）
 electron/client.mjs               查找 / 挂接 / 经同意后重启官方客户端
 electron/editor.mjs               内置「图片批注」窗口（gx-edithere:// + preload IPC）
 electron/preload-edithere.cjs     contextBridge：window.grokbotX
@@ -123,7 +145,7 @@ npm run start              # 开发（会先构建编辑器）
 packaging/build-all.sh     # 当前平台的安装包
 ```
 
-产物在 `release/`。macOS 包需要在 macOS 上构建；Linux 上构建 Windows 安装器需要 Wine，否则由 GitHub Actions 的 Windows runner 产出。打 `v*` 标签才会发布 Release。
+产物在 `release/`（含 `latest-*.yml` / `.blockmap` 等自更新元数据）。macOS 包需要在 macOS 上构建；Linux 上构建 Windows 安装器需要 Wine，否则由 GitHub Actions 的 Windows runner 产出。本地打包使用 `--publish never`，不会向 GitHub 发布。打 `v*` 标签才会由 Actions 创建 Release 并挂上三平台安装包和 `install.sh` / `install.ps1`。
 
 官方客户端的默认查找路径：
 
