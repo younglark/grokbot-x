@@ -83,6 +83,7 @@ jobs:
             release/*.blockmap
             release/install.sh
             release/install.ps1
+            !release/builder-debug.yml
           if-no-files-found: error
 
   # Only tag pushes (v*) create a GitHub Release. Main/PR builds just test
@@ -97,6 +98,8 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - name: Drop electron-builder debug config
+        run: rm -f dist/builder-debug.yml
       - uses: softprops/action-gh-release@v2
         with:
           files: |
