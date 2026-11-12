@@ -44,7 +44,7 @@
   const $ = (id) => document.getElementById(id);
   const tabsEl = $("tabs");
   const stageEl = $("stage");
-  const panelEl = $("panel");
+  const panelEl = $("panelBody");
 
   let frameListener = null;
   function stopFrameListen() {
@@ -812,7 +812,27 @@
     }
   }
 
+  function setShellFold(which, collapsed) {
+    if (which === "panel") {
+      $("main").classList.toggle("is-panel-collapsed", collapsed);
+      const btn = $("togglePanel");
+      btn.setAttribute("aria-expanded", String(!collapsed));
+      btn.textContent = collapsed ? "展开验收" : "收起验收";
+    } else {
+      document.querySelector(".app").classList.toggle("is-top-collapsed", collapsed);
+      const btn = $("toggleTop");
+      btn.setAttribute("aria-expanded", String(!collapsed));
+      btn.textContent = collapsed ? "展开顶栏" : "收起顶栏";
+    }
+  }
+
   function bindGlobal() {
+    $("togglePanel").addEventListener("click", () => {
+      setShellFold("panel", !$("main").classList.contains("is-panel-collapsed"));
+    });
+    $("toggleTop").addEventListener("click", () => {
+      setShellFold("top", !document.querySelector(".app").classList.contains("is-top-collapsed"));
+    });
     $("copyAll").addEventListener("click", copyAll);
     $("files").addEventListener("change", () => {
       const n = Array.from($("files").files || []);
@@ -839,15 +859,25 @@
       state.responsive.breakpoints.forEach((b) => { state.responsive.panelFold[b.name] = b.name !== bp; });
     }
     const fold = q.get("fold");
-    if (!fold) return;
-    const cur = state.responsive.current;
-    const all = regionIds(cur).map(([id]) => id);
-    const ids = fold === "all" ? all : fold.split(",").map((s) => s.trim()).filter((id) => all.includes(id));
-    state.responsive.collapsed[cur] = Object.fromEntries(ids.map((id) => [id, true]));
+    if (fold) {
+      const cur = state.responsive.current;
+      const all = regionIds(cur).map(([id]) => id);
+      const ids = fold === "all" ? all : fold.split(",").map((s) => s.trim()).filter((id) => all.includes(id));
+      state.responsive.collapsed[cur] = Object.fromEntries(ids.map((id) => [id, true]));
+    }
+    const shell = (q.get("shell") || "").split(",").map((s) => s.trim()).filter(Boolean);
+    if (shell.includes("panel") || shell.includes("top")) {
+      // applied after bindGlobal so buttons exist
+      state._shell = shell;
+    }
   }
   function init() {
     bindGlobal();
     applyPreviewParams();
+    if (state._shell) {
+      if (state._shell.includes("panel")) setShellFold("panel", true);
+      if (state._shell.includes("top")) setShellFold("top", true);
+    }
     const id = location.hash.slice(1);
     selectTab(TABS.some((t) => t.id === id) ? id : "visual");
     if (new URLSearchParams(location.search).get("test") === "scrub") {

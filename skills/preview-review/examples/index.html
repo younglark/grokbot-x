@@ -4,21 +4,29 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>晨光咖啡 App 改版验收</title>
-  <link rel="stylesheet" href="assets/app.css?v=11">
+  <link rel="stylesheet" href="assets/app.css?v=14">
 </head>
 <body>
   <div class="app">
-    <header class="top">
+    <header class="top" id="top">
       <div class="brand">
         <p class="eyebrow">预制验收模板</p>
         <h1>晨光咖啡 App 改版验收</h1>
       </div>
       <p class="fill-meta" id="fillMeta">已填 0 / 5 个场景</p>
     </header>
-    <nav class="tabs" id="tabs" role="tablist" aria-label="验收场景"></nav>
-    <div class="main">
+    <div class="tabs-row">
+      <nav class="tabs" id="tabs" role="tablist" aria-label="验收场景"></nav>
+      <div class="shell-folds">
+        <button type="button" class="shell-fold" id="toggleTop" aria-expanded="true" aria-controls="top">收起顶栏</button>
+        <button type="button" class="shell-fold" id="togglePanel" aria-expanded="true" aria-controls="panel">收起验收</button>
+      </div>
+    </div>
+    <div class="main" id="main">
       <section class="stage" id="stage" aria-live="polite"></section>
-      <aside class="panel" id="panel"></aside>
+      <aside class="panel" id="panel">
+        <div class="panel-body" id="panelBody"></div>
+      </aside>
     </div>
     <footer class="dock">
       <label class="attach">
@@ -31,6 +39,6 @@
     </footer>
   </div>
   <div class="toast" id="toast" role="status"></div>
-  <script src="assets/app.js?v=11"></script>
+  <script src="assets/app.js?v=14"></script>
 </body>
 </html>
