@@ -24,7 +24,7 @@ jobs:
           node-version: '22'
       - run: npm ci || npm install
       - run: node packaging/check.mjs
-      - run: node --test tests/
+      - run: npm test
 
   pack:
     needs: test
