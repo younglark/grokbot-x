@@ -123,14 +123,32 @@ export function formatTimestamp(ms, now = Date.now(), timeZone) {
   return `${abs}（${formatRelative(ms, now)}）`;
 }
 
+export function isSelectedId(value) {
+  return typeof value === 'string' && value.length > 0;
+}
+
 export function isRoster(value) {
   return !!(
     value
     && typeof value === 'object'
-    && typeof value.selectedId === 'string'
+    && 'selectedId' in value
+    && (typeof value.selectedId === 'string' || value.selectedId === null)
     && value.agentsById != null
     && typeof value.agentsById === 'object'
   );
+}
+
+export function resolveSelectedId(roster, fallbackId) {
+  if (roster && isSelectedId(roster.selectedId)) return roster.selectedId;
+  if (isSelectedId(fallbackId)) return fallbackId;
+  return '';
+}
+
+export function hintAgentId(value) {
+  if (!value || typeof value !== 'object') return '';
+  if (isSelectedId(value.currentAgentId)) return value.currentAgentId;
+  if (isSelectedId(value.revealAgentId)) return value.revealAgentId;
+  return '';
 }
 
 export function getAgent(agentsById, id) {
@@ -151,9 +169,9 @@ export function getAgent(agentsById, id) {
   }
 }
 
-export function selectedRow(roster) {
+export function selectedRow(roster, fallbackId) {
   if (!isRoster(roster)) return null;
-  return getAgent(roster.agentsById, roster.selectedId);
+  return getAgent(roster.agentsById, resolveSelectedId(roster, fallbackId));
 }
 
 function isRosterIn(value) {
@@ -185,19 +203,23 @@ export function getRootFiber(doc) {
   return null;
 }
 
-export function findRoster(fiberRoot) {
-  let found = null;
+export function findPageState(fiberRoot) {
+  let roster = null;
+  let currentAgentId = '';
   const seen = new Set();
+  function done() {
+    return !!(roster && (isSelectedId(roster.selectedId) || currentAgentId));
+  }
   function visitValue(value) {
-    const hit = isRosterIn(value);
-    if (hit) {
-      found = hit;
-      return true;
+    if (!roster) {
+      const hit = isRosterIn(value);
+      if (hit) roster = hit;
     }
-    return false;
+    if (!currentAgentId) currentAgentId = hintAgentId(value);
+    return done();
   }
   function visitFiber(fiber, depth) {
-    if (found) return true;
+    if (done()) return true;
     if (!fiber || typeof fiber !== 'object' || depth > MAX_DEPTH) return false;
     if (seen.has(fiber)) return false;
     seen.add(fiber);
@@ -226,11 +248,19 @@ export function findRoster(fiberRoot) {
     return false;
   }
   if (fiberRoot) visitFiber(fiberRoot, 0);
-  return found;
+  return { roster, currentAgentId };
+}
+
+export function findRoster(fiberRoot) {
+  return findPageState(fiberRoot).roster;
+}
+
+export function readPageState(doc) {
+  return findPageState(getRootFiber(doc));
 }
 
 export function readRoster(doc) {
-  return findRoster(getRootFiber(doc));
+  return readPageState(doc).roster;
 }
 
 function activityOf(row) {
@@ -293,18 +323,19 @@ export function buildConnectionFields(row) {
   ];
 }
 
-export function panelState(roster, now = Date.now(), timeZone) {
+export function panelState(roster, now = Date.now(), timeZone, fallbackId) {
   if (!isRoster(roster)) {
     return { kind: 'no-roster', title: '', selectedId: '', now: [], timeline: [], connection: [] };
   }
-  const row = selectedRow(roster);
+  const selectedId = resolveSelectedId(roster, fallbackId);
+  const row = selectedRow(roster, fallbackId);
   if (!row) {
-    return { kind: 'no-row', title: '', selectedId: roster.selectedId, now: [], timeline: [], connection: [] };
+    return { kind: 'no-row', title: '', selectedId, now: [], timeline: [], connection: [] };
   }
   return {
     kind: 'ok',
     title: botTitle(row),
-    selectedId: roster.selectedId,
+    selectedId,
     now: buildNowFields(row),
     timeline: buildTimelineFields(row, now, timeZone),
     connection: buildConnectionFields(row),

@@ -8,7 +8,7 @@ import {
   displayValue, displayText, displayCount, listLength,
   runningStatus, unreadLabel, groupLabel, botTitle,
   formatAbsolute, formatRelative, formatTimestamp,
-  isRoster, getAgent, selectedRow, getRootFiber, findRoster, readRoster,
+  isRoster, getAgent, selectedRow, resolveSelectedId, getRootFiber, findRoster, findPageState, readRoster,
   buildNowFields, buildTimelineFields, buildConnectionFields, panelState,
 } from '../features/bot-inspector/format.mjs';
 import feature from '../features/bot-inspector/feature.mjs';
@@ -205,7 +205,13 @@ test('selectedRow reads Map and plain object agentsById without calling roster m
   assert.equal(isRoster({ selectedId: 1, agentsById: {} }), false);
   assert.equal(isRoster({ selectedId: 'x' }), false);
   assert.equal(isRoster(null), false);
+  assert.equal(isRoster({ selectedId: null, agentsById: {} }), true);
+  assert.equal(isRoster({ agentsById: {} }), false);
   assert.equal(selectedRow({ selectedId: 'bot-1', agentsById: { 'bot-1': row } }), row);
+  assert.equal(selectedRow({ selectedId: null, agentsById: { 'bot-1': row } }), null);
+  assert.equal(selectedRow({ selectedId: null, agentsById: { 'bot-1': row } }, 'bot-1'), row);
+  assert.equal(resolveSelectedId({ selectedId: 'bot-1', agentsById: {} }, 'other'), 'bot-1');
+  assert.equal(resolveSelectedId({ selectedId: null, agentsById: {} }, 'bot-1'), 'bot-1');
   const map = new Map([['bot-1', row]]);
   assert.equal(selectedRow({ selectedId: 'bot-1', agentsById: map }), row);
   assert.equal(selectedRow({ selectedId: 'missing', agentsById: { 'bot-1': row } }), null);
@@ -310,10 +316,27 @@ test('buildNowFields, timeline and connection cover the specified keys', () => {
   assert.ok(!buildConnectionFields(row).some((f) => /\d+ ?token|额度|剩余/.test(f.value) && /\d{2,}/.test(f.value) && f.label.includes('额度')));
 });
 
+test('findPageState keeps walking for currentAgentId when selectedId is null', () => {
+  const row = { id: 'bot-1', name: 'Hint' };
+  const roster = { selectedId: null, agentsById: { 'bot-1': row } };
+  const root = fiber({
+    memoizedState: { memoizedState: roster, next: null },
+    child: fiber({ memoizedProps: { currentAgentId: 'bot-1' } }),
+  });
+  const page = findPageState(root);
+  assert.equal(page.roster, roster);
+  assert.equal(page.currentAgentId, 'bot-1');
+  assert.equal(panelState(page.roster, NOW, TZ, page.currentAgentId).title, 'Hint');
+});
+
 test('panelState reports empty kinds without inventing a selected row', () => {
   assert.equal(POLL_MS, 1500);
   assert.deepEqual(panelState(null, NOW, TZ).kind, 'no-roster');
   assert.equal(panelState({ selectedId: 'gone', agentsById: {} }, NOW, TZ).kind, 'no-row');
+  const viaFallback = panelState({ selectedId: null, agentsById: { 'bot-1': { id: 'bot-1', name: 'Fallback', isRunning: false } } }, NOW, TZ, 'bot-1');
+  assert.equal(viaFallback.kind, 'ok');
+  assert.equal(viaFallback.title, 'Fallback');
+  assert.equal(viaFallback.selectedId, 'bot-1');
   const ok = panelState(sampleRoster(), NOW, TZ);
   assert.equal(ok.kind, 'ok');
   assert.equal(ok.title, '调研助手');
