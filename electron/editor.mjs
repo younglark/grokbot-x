@@ -12,7 +12,7 @@ import { createLogger } from '../core/log.mjs';
 import { APP_DIR } from '../core/config.mjs';
 import {
   validateFilesPayload, validateCopyText, validateCopyFiles, validateImagePayload,
-  exportStamp, imageInfo,
+  exportStamp, imageInfo, fillFeedbackImagePaths,
 } from './edithere-ipc.mjs';
 
 export const SCHEME = 'gx-edithere';
@@ -92,10 +92,24 @@ async function writeExport(files, { reveal, pickLocation }) {
     dir = path.join(exportsRoot(), exportStamp());
   }
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const names = files.map((f) => f.name);
+  let jsonText = '';
+  let jsonName = '';
   let first = '';
   for (const file of files) {
+    let buffer = file.buffer;
+    const isJson = file.mime === 'application/json' || /\.json$/i.test(file.name);
+    if (isJson) {
+      const src = buffer.toString('utf8');
+      const filled = fillFeedbackImagePaths(src, dir, names);
+      if (filled.ok) buffer = Buffer.from(filled.text, 'utf8');
+      if (!jsonText) {
+        jsonText = filled.ok ? filled.text : src;
+        jsonName = file.name;
+      }
+    }
     const dest = path.join(dir, file.name);
-    fs.writeFileSync(dest, file.buffer, { mode: 0o600 });
+    fs.writeFileSync(dest, buffer, { mode: 0o600 });
     if (!first) first = dest;
   }
   lastExportDir = dir;
@@ -105,7 +119,7 @@ async function writeExport(files, { reveal, pickLocation }) {
   }
   const message = `已保存到 ${displayPath(dir)}`;
   notifyUser('图片批注', `${message}。可在窗口顶栏点「在文件夹中显示」。不会回填 Grok Bot。`);
-  return { ok: true, dir, file: first, message };
+  return { ok: true, dir, file: first, message, jsonText, jsonName };
 }
 
 function writeClipboardFiles(files) {

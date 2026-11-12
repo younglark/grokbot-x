@@ -4,13 +4,34 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import vm from 'node:vm';
 import {
   validateFilesPayload, validateCopyText, validateCopyFiles, validateImagePayload,
   sanitizeFileName, exportStamp, imageInfo, MAX_FILES,
+  fillFeedbackImagePaths, collectImageDescriptors, isAbsoluteNativePath,
 } from '../electron/edithere-ipc.mjs';
+
+function loadUmd(rel) {
+  const file = path.join(root, rel);
+  const module = { exports: {} };
+  const sandbox = {
+    module,
+    exports: module.exports,
+    require: (id) => {
+      if (id === './image-format.js') return loadUmd('features/edithere/editor/src/image-format.js');
+      throw new Error('cannot require ' + id);
+    },
+    globalThis: {},
+    console,
+  };
+  vm.runInNewContext(fs.readFileSync(file, 'utf8'), sandbox, { filename: file });
+  return sandbox.module.exports;
+}
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const built = path.join(root, 'features', 'edithere', 'build', 'editor.html');
+const imageFormat = loadUmd('features/edithere/editor/src/image-format.js');
+const feedbackFormat = loadUmd('features/edithere/editor/src/feedback.js');
 
 function b64(buf) {
   return Buffer.from(buf).toString('base64');
@@ -142,4 +163,114 @@ test('imageInfo reads PNG dimensions and exportStamp is Asia/Shanghai compact fo
   assert.equal(info.w, 2);
   assert.equal(info.h, 3);
   assert.match(exportStamp(new Date('2026-11-12T07:08:09Z')), /^\d{8}-\d{6}$/);
+});
+
+const SAMPLE_SHA = 'a'.repeat(64);
+function fileDescriptor(name, extra = {}) {
+  return {
+    mode: 'file',
+    file: name,
+    mimeType: 'image/png',
+    width: 960,
+    height: 640,
+    devicePixelRatio: null,
+    sha256: SAMPLE_SHA,
+    ...extra,
+  };
+}
+function sampleFeedback(image) {
+  return {
+    annotationSpace: 'result',
+    schemaVersion: 'feedback-minimal-4',
+    tool: { name: 'EditHere', version: '0.13.0-grokbot-x.1' },
+    image,
+    objects: [],
+  };
+}
+
+test('fillFeedbackImagePaths writes absolute paths for a user-picked non-ASCII dir', () => {
+  const image = fileDescriptor('test-open-feedback.png', { preview: 'test-open-feedback.annotated.png' });
+  const src = feedbackFormat.serialize(sampleFeedback(image));
+  const dir = '/tmp/导出 目录/图片批注/20261112-160000';
+  const r = fillFeedbackImagePaths(src, dir, ['test-open-feedback.json', 'test-open-feedback.png', 'test-open-feedback.annotated.png'], path.posix);
+  assert.equal(r.ok, true);
+  assert.equal(r.changed, true);
+  assert.equal(r.data.image.file, 'test-open-feedback.png');
+  assert.equal(r.data.image.path, `${dir}/test-open-feedback.png`);
+  assert.equal(r.data.image.previewPath, `${dir}/test-open-feedback.annotated.png`);
+  assert.equal(JSON.parse(r.text).image.path, r.data.image.path);
+  imageFormat.validate(r.data.image);
+  assert.doesNotThrow(() => feedbackFormat.normalizeImage(JSON.parse(r.text)));
+});
+
+test('fillFeedbackImagePaths uses native separators for a Windows picked dir', () => {
+  const src = JSON.stringify(sampleFeedback(fileDescriptor('shot-feedback.png')));
+  const dir = 'D:\\Users\\阳\\导出\\20261112-160000';
+  const r = fillFeedbackImagePaths(src, dir, ['shot-feedback.png'], path.win32);
+  assert.equal(r.ok, true);
+  assert.equal(r.data.image.path, 'D:\\Users\\阳\\导出\\20261112-160000\\shot-feedback.png');
+  imageFormat.validate(r.data.image);
+  assert.doesNotThrow(() => feedbackFormat.normalizeImage(JSON.parse(r.text)));
+});
+
+test('fillFeedbackImagePaths skips descriptors whose companion was not written', () => {
+  const src = JSON.stringify(sampleFeedback(fileDescriptor('missing.png')));
+  const r = fillFeedbackImagePaths(src, '/tmp/exports/a', ['feedback.json'], path.posix);
+  assert.equal(r.ok, true);
+  assert.equal(r.changed, false);
+  assert.equal(r.text, src);
+  assert.equal(r.data.image.path, undefined);
+});
+
+test('fillFeedbackImagePaths fills each page and frame image in set/video exports', () => {
+  const setDoc = {
+    $schema: 'urn:edithere:image-set-feedback:1',
+    schemaVersion: 'image-set-feedback-1',
+    tool: { name: 'EditHere', version: '0.13.0-grokbot-x.1' },
+    exportedAt: '2026-11-12T16:00:00+08:00',
+    annotationSpace: 'result',
+    set: { name: '组图', pageCount: 1, annotatedPageCount: 1 },
+    pageIndex: [{ id: 'p1', name: '首页', index: 1, width: 960, height: 640, annotated: true, imageFile: 'page-1-home.png' }],
+    pages: [{
+      id: 'p1', name: '首页', index: 1, width: 960, height: 640, imageFile: 'page-1-home.png',
+      feedback: sampleFeedback(fileDescriptor('page-1-home.png')),
+    }],
+    groupNotes: [],
+  };
+  const dir = '/home/user/导出/set-1';
+  const r = fillFeedbackImagePaths(JSON.stringify(setDoc), dir, ['page-1-home.png'], path.posix);
+  assert.equal(r.ok, true);
+  assert.equal(r.data.pages[0].feedback.image.path, `${dir}/page-1-home.png`);
+  assert.equal(r.data.pageIndex[0].imageFile, 'page-1-home.png');
+  imageFormat.validate(r.data.pages[0].feedback.image);
+  assert.doesNotThrow(() => feedbackFormat.normalizeSet(r.data));
+
+  const videoDoc = {
+    schemaVersion: 'video-feedback-1',
+    tool: 'EditHere',
+    exportedAt: '2026-11-12T16:00:00+08:00',
+    video: { source: 'clip.mp4', durationMs: 1000, width: 960, height: 640 },
+    frames: [{ id: 'f1', timestampMs: 0, timestampUs: 0, imageFile: 'frame-f1.png', feedback: sampleFeedback(fileDescriptor('frame-f1.png')) }],
+    objects: [],
+  };
+  const v = fillFeedbackImagePaths(JSON.stringify(videoDoc), dir, ['frame-f1.png'], path.posix);
+  assert.equal(v.ok, true);
+  assert.equal(v.data.frames[0].feedback.image.path, `${dir}/frame-f1.png`);
+  assert.doesNotThrow(() => imageFormat.validate(v.data.frames[0].feedback.image));
+  assert.doesNotThrow(() => feedbackFormat.normalizeImage(v.data.frames[0].feedback));
+});
+
+test('image descriptors with path re-import, invalid paths are rejected', () => {
+  const ok = fileDescriptor('a.png', { path: '/tmp/exports/a.png' });
+  assert.equal(imageFormat.validate({ ...ok }).path, '/tmp/exports/a.png');
+  assert.throws(() => imageFormat.validate(fileDescriptor('a.png', { path: 'exports/a.png' })));
+  assert.throws(() => imageFormat.validate(fileDescriptor('a.png', { path: '/tmp/exports/other.png' })));
+  assert.throws(() => imageFormat.validate({ ...fileDescriptor('a.png'), mode: 'none', path: '/tmp/exports/a.png', file: undefined }));
+  const withPreview = fileDescriptor('a.png', { preview: 'a.annotated.png', path: '/tmp/a.png', previewPath: '/tmp/a.annotated.png' });
+  assert.doesNotThrow(() => imageFormat.validate(withPreview));
+  assert.throws(() => imageFormat.validate(fileDescriptor('a.png', { previewPath: '/tmp/a.annotated.png' })));
+  assert.ok(isAbsoluteNativePath('/tmp/导出/a.png'));
+  assert.ok(isAbsoluteNativePath('D:\\Users\\阳\\a.png'));
+  assert.equal(isAbsoluteNativePath('relative/a.png'), false);
+  assert.equal(collectImageDescriptors(sampleFeedback(ok)).length, 1);
 });

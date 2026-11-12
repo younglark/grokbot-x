@@ -38,14 +38,29 @@
     if(!safeName(filename)||!/^.+\.annotated\.(png|jpg)$/i.test(filename))throw new Error('Invalid annotated preview filename.');
     return /\.png$/i.test(filename)?'image/png':'image/jpeg';
   }
+  // grokbot-x may add absolute `path` / `previewPath` after a save. They are
+  // optional, ignored by import (companions are still matched by `file`), and
+  // must be OS-native absolute paths whose basename matches `file` / `preview`.
+  const MAX_ABS_PATH=4096;
+  function isAbsoluteNativePath(value){
+    if(typeof value!=='string'||!value||value.length>MAX_ABS_PATH||value.includes('\0'))return false;
+    if(value.startsWith('/')&&!value.startsWith('//'))return true;
+    if(/^[A-Za-z]:[\\/]/.test(value))return true;
+    if(value.startsWith('\\\\')&&value.length>3)return true;
+    return false;
+  }
+  function pathBasename(value){return String(value).replace(/\\/g,'/').split('/').pop();}
   function validate(value){
-    if(!record(value))throw new Error('Invalid image descriptor.');const fields=['mode','mimeType','width','height','devicePixelRatio','sha256',...(value.mode==='file'?['file']:value.mode==='embedded'?['dataUrl']:[]),...(Object.hasOwn(value,'preview')?['preview']:[])];
+    if(!record(value))throw new Error('Invalid image descriptor.');const extra=[...(Object.hasOwn(value,'preview')?['preview']:[]),...(Object.hasOwn(value,'path')?['path']:[]),...(Object.hasOwn(value,'previewPath')?['previewPath']:[])];
+    const fields=['mode','mimeType','width','height','devicePixelRatio','sha256',...(value.mode==='file'?['file']:value.mode==='embedded'?['dataUrl']:[]),...extra];
     if(Object.keys(value).sort().join(',')!==fields.sort().join(',')||!['file','embedded','none'].includes(value.mode)||!['image/png','image/jpeg','image/webp','image/gif','image/bmp'].includes(value.mimeType)||!Number.isInteger(value.width)||!Number.isInteger(value.height)||value.width<1||value.height<1||value.width>32767||value.height>32767||value.width*value.height>32000000||!(value.devicePixelRatio===null||Number.isFinite(value.devicePixelRatio)&&value.devicePixelRatio>0)||typeof value.sha256!=='string'||!/^[a-f0-9]{64}$/i.test(value.sha256))throw new Error('Invalid image descriptor fields.');
     if(value.mode==='file'&&(!safeName(value.file)||!({'image/png':/\.png$/i,'image/jpeg':/\.jpe?g$/i,'image/webp':/\.webp$/i,'image/gif':/\.gif$/i,'image/bmp':/\.bmp$/i}[value.mimeType]).test(value.file)))throw new Error('Invalid original image filename.');
     if(Object.hasOwn(value,'preview'))previewMimeType(value.preview);
+    if(Object.hasOwn(value,'path')){if(value.mode!=='file'||!isAbsoluteNativePath(value.path)||pathBasename(value.path)!==value.file)throw new Error('Invalid original image path.');}
+    if(Object.hasOwn(value,'previewPath')){if(!Object.hasOwn(value,'preview')||!isAbsoluteNativePath(value.previewPath)||pathBasename(value.previewPath)!==value.preview)throw new Error('Invalid annotated preview path.');}
     if(value.mode==='embedded')verify(value,value.dataUrl);return value;
   }
   function verify(value,dataUrl){const info=inspect(dataUrl);if(info.mimeType!==value.mimeType||info.width!==value.width||info.height!==value.height||info.sha256!==value.sha256?.toLowerCase())throw new Error('Original image MIME, dimensions or SHA-256 do not match.');return info;}
   function dataUrlOf(value){return typeof value==='string'?value:record(value)&&value.mode==='embedded'?(validate(value),value.dataUrl):undefined;}
-  return{safeName,sha256,dataBytes,dimensions,inspect,descriptor,previewMimeType,validate,verify,dataUrlOf};
+  return{safeName,sha256,dataBytes,dimensions,inspect,descriptor,previewMimeType,validate,verify,dataUrlOf,isAbsoluteNativePath,pathBasename,MAX_ABS_PATH};
 });

@@ -53,9 +53,14 @@ EditHere 的名称、Logo 与品牌元素**不在** PolyForm 授权范围内。�
 在上游源码上的修改（均已标注「Modified by grokbot-x」）：
 
 - `src/shell.html` — 窗口标题与顶栏改为「图片批注」；去掉 EditHere Logo；加入宿主信息条与 `/*__HOST__*/`；空状态与帮助中的归属说明
-- `src/app.js` — 将下载 / 复制 JSON / 复制 JSON 与图片 / 保存项目等导出路径接到宿主 IPC；增加 `GrokbotXEditorHooks`
+- `src/app.js` — 将下载 / 复制 JSON / 复制 JSON 与图片 / 保存项目等导出路径接到宿主 IPC；增加 `GrokbotXEditorHooks`；保存后再用主进程返回的 JSON 文本复制到剪贴板
+- `src/image-format.js` — 允许文件型图片描述符带有可选的绝对路径字段 `path` / `previewPath`（导入时仍按 `file` 匹配配套图片）
 - `src/feedback.js` — 产品版本改为使用构建常量 / `<meta name="edithere-version">`，不再读取 CMakeLists.txt
 - `src/help.js` — 帮助文案改为文件导出（不回填 Grok Bot），并注明派生关系
+
+### 导出 JSON 的路径字段（grokbot-x）
+
+保存或「复制 JSON 与图片」时，主进程在最终导出目录确定之后，会给每个实际写入的配套原图（`image.mode === "file"`）补上 OS 原生的绝对路径 `image.path`，给已写入的批注预览补上 `image.previewPath`。`file` / `preview` 仍是相对文件名，以保持与上游反馈格式兼容。不携带原图（`mode: "none"`）或内嵌原图（`mode: "embedded"`）时不加路径。「查看 JSON」在保存前的预览里不会出现路径。
 
 ## 构建
 

@@ -1,5 +1,7 @@
-// Validation for editor IPC payloads. Pure Node, no Electron imports,
-// so tests can exercise the same checks the main process uses.
+// Validation for editor IPC payloads, plus post-save path filling.
+// Pure Node, no Electron imports, so tests can exercise the same checks
+// the main process uses.
+import path from 'node:path';
 export const MAX_FILE_BYTES = 80 * 1024 * 1024;
 export const MAX_FILES = 32;
 export const MAX_TEXT_CHARS = 20 * 1024 * 1024;
@@ -140,4 +142,75 @@ export function imageInfo(buf) {
     return { fmt: 'bmp', mime: 'image/bmp', w: buf.readInt32LE(18), h: Math.abs(buf.readInt32LE(22)) };
   }
   return { fmt: 'unknown', mime: '', w: 0, h: 0 };
+}
+
+export const MAX_ABS_PATH = 4096;
+
+export function isAbsoluteNativePath(value) {
+  if (typeof value !== 'string' || !value || value.length > MAX_ABS_PATH || value.includes('\0')) return false;
+  if (value.startsWith('/') && !value.startsWith('//')) return true;
+  if (/^[A-Za-z]:[\\/]/.test(value)) return true;
+  if (value.startsWith('\\\\') && value.length > 3) return true;
+  return false;
+}
+
+/** Image descriptors live at the root (single image) or under each page/frame. */
+export function collectImageDescriptors(root) {
+  const out = [];
+  const consider = (image) => {
+    if (image && typeof image === 'object' && !Array.isArray(image) && typeof image.mode === 'string') out.push(image);
+  };
+  if (!root || typeof root !== 'object' || Array.isArray(root)) return out;
+  consider(root.image);
+  if (Array.isArray(root.pages)) {
+    for (const page of root.pages) consider(page?.feedback?.image);
+  }
+  if (Array.isArray(root.frames)) {
+    for (const frame of root.frames) consider(frame?.feedback?.image);
+  }
+  return out;
+}
+
+/**
+ * After the export directory is known, attach OS-native absolute `path` /
+ * `previewPath` to every file-mode image descriptor whose companion was
+ * written in this save. `file` / `preview` are left unchanged.
+ * `pathApi` is injectable so tests can exercise Windows paths on Linux.
+ */
+export function fillFeedbackImagePaths(jsonText, dir, writtenNames = [], pathApi = path) {
+  if (typeof jsonText !== 'string') return { ok: false, error: 'json text required' };
+  if (typeof dir !== 'string' || !dir) return { ok: false, error: 'dir required' };
+  let resolved;
+  try { resolved = pathApi.resolve(dir); }
+  catch (e) { return { ok: false, error: e.message || 'invalid dir' }; }
+  if (!isAbsoluteNativePath(resolved)) return { ok: false, error: 'dir must be an absolute path' };
+  let data;
+  try { data = JSON.parse(jsonText); }
+  catch { return { ok: false, error: 'invalid json' }; }
+  const names = new Set((writtenNames || []).map((n) => String(n)));
+  let changed = false;
+  for (const image of collectImageDescriptors(data)) {
+    if (image.mode === 'file' && typeof image.file === 'string' && names.has(image.file)) {
+      const next = pathApi.join(resolved, image.file);
+      if (!isAbsoluteNativePath(next) || pathApi.basename(next) !== image.file) {
+        return { ok: false, error: `invalid image path for ${image.file}` };
+      }
+      if (image.path !== next) { image.path = next; changed = true; }
+    }
+    if (typeof image.preview === 'string' && names.has(image.preview)) {
+      const next = pathApi.join(resolved, image.preview);
+      if (!isAbsoluteNativePath(next) || pathApi.basename(next) !== image.preview) {
+        return { ok: false, error: `invalid preview path for ${image.preview}` };
+      }
+      if (image.previewPath !== next) { image.previewPath = next; changed = true; }
+    }
+  }
+  if (!changed) return { ok: true, text: jsonText, changed: false, data };
+  let text;
+  try { text = JSON.stringify(data) + '\n'; }
+  catch (e) { return { ok: false, error: e.message || 'serialize failed' }; }
+  if (typeof text !== 'string' || text.length > MAX_TEXT_CHARS) {
+    return { ok: false, error: 'filled json too large' };
+  }
+  return { ok: true, text, changed: true, data };
 }
