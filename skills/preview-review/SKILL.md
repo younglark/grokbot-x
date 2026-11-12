@@ -13,9 +13,9 @@ description: >-
 - index.html 完全自包含、相对路径、不依赖外网、无需登录。
 - 预览包里只放要验收的内容；凭据、令牌、会话、用户隐私一概不写进去。
 - 任何消息都不自动发送：反馈永远是「用户复制→用户粘贴」。
-- 预览包是**可套用的验收模板**，不是一次性示意图。交互要真实可操作，功能要能真正用来验收，UI 要整洁好看。先套用预制模板再改成本次交付内容。
+- 预览包是**可套用的验收模板**，不是一次性示意图。交互要真实可操作，功能要能真正用来验收，UI 要整洁好看。先复制本 skill 的 `examples/`，再改成本次交付内容。
 
-参考实现（普通浏览器可直接打开）：https://younglark.github.io/preview-review-examples/ ，源码与可下载 zip：https://github.com/younglark/preview-review-examples
+预制模板就在本 skill 目录的 `examples/` 下（`index.html`、`review.json`、`assets/`、`app/`）。先整份复制，再改成本次要验收的内容与反馈项；有真实构建页面时放进 `app/`，用 iframe 加 `?review=` 嵌入（见第 4 节）。
 
 ## 1. 什么时候用
 
@@ -127,7 +127,7 @@ if (bridge && bridge.submitFeedback) {
 
 ## 6. 各场景反馈模板（按需写进预览包）
 
-这些是**供套用、参考的预制模板**。产出 zip 时，按本次交付需要的场景把对应预览做成能真正操作的画面、把对应反馈 UI 写进 index.html；多场景按第 3 节用 Tab 组合。每项反馈都保留 `scene` 和 `verdict`，附件（截图/录屏）走 `files` 桥接、不写进 JSON。场景字段可混用（例如响应式 + 打点标注），多 Tab 包外层 `scene` 为 `bundle`。
+这些是**供套用、参考的预制模板**；完整可运行的套用起点是本 skill 的 `examples/`。产出 zip 时先复制 `examples/`，再按本次交付需要的场景改预览和反馈 UI；多场景按第 3 节用 Tab 组合。每项反馈都保留 `scene` 和 `verdict`，附件（截图/录屏）走 `files` 桥接、不写进 JSON。场景字段可混用（例如响应式 + 打点标注），多 Tab 包外层 `scene` 为 `bundle`。
 
 ### 通用兜底（`scene: "general"`）
 单选通过/需修改/不通过；多行备注；附件上传。

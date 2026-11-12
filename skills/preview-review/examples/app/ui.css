@@ -1,0 +1,108 @@
+/* 晨光咖啡「真实页面」样式。验收壳通过 iframe 嵌入，不改这里的正常逻辑。 */
+:root{
+  --paper:#faf6f0; --ink:#1c1712; --muted:#7a7166; --line:#efe8dc;
+  --serif:"Iowan Old Style","Palatino Linotype","Songti SC","Source Han Serif SC","Noto Serif SC",serif;
+  --sans:"PingFang SC","Hiragino Sans GB","Noto Sans SC",ui-sans-serif,system-ui,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--paper);color:var(--ink);font:14px/1.5 var(--sans)}
+button,input{font:inherit;color:inherit}
+button{cursor:pointer}
+a{color:#163d34}
+
+/* login */
+body.page-login{background:transparent;display:flex;align-items:center;justify-content:center;padding:8px;min-height:100%}
+.login{width:min(380px,100%);background:#fbf7ef;border:1px solid #d5cbb9;border-radius:22px;padding:32px 26px 26px;box-shadow:0 16px 40px rgba(28,23,18,.08)}
+.login h2{margin:0 0 6px;font-family:var(--serif);font-size:28px}
+.login .sub{margin:0 0 22px;color:var(--muted)}
+.login .fieldline{margin:0 0 10px}
+.login input{width:100%;border:1px solid #d5cbb9;border-radius:10px;padding:10px 12px;background:#fff}
+.login-btn{width:100%;margin-top:8px;border:0;background:var(--ink);color:#fff;border-radius:12px;padding:12px;font-weight:650}
+.login .flash{margin:12px 0 0;font-size:13px;color:#2f6f4e;display:none}
+.login.is-ok .flash{display:block}
+
+/* main app */
+body.page-main{overflow:auto}
+.app-shell{min-height:100%;display:flex;flex-direction:column;background:var(--paper)}
+.status{height:36px;display:flex;align-items:center;justify-content:space-between;padding:10px 18px 0;font-size:11px;color:#57534e}
+.nav{display:flex;align-items:baseline;justify-content:space-between;padding:6px 16px 10px}
+.nav h3{margin:0;font-family:var(--serif);font-size:26px;font-weight:600}
+.nav .loc{font-size:11px;color:var(--muted)}
+.chips{display:flex;gap:6px;padding:0 16px 12px;flex-wrap:wrap}
+.chip{border:0;background:#efe8dc;color:#44403c;border-radius:999px;padding:4px 9px;font-size:11px}
+.chip.on{background:var(--ink);color:#fff}
+.hero{margin:0 16px;border-radius:18px;min-height:168px;padding:16px;color:#fff;display:flex;flex-direction:column;justify-content:flex-end;border:0;width:calc(100% - 32px);text-align:left;
+  background:radial-gradient(circle at 80% 20%,rgba(255,255,255,.25),transparent 40%),linear-gradient(165deg,#d97706,#9a3412 62%,#7c2d12)}
+.hero small{opacity:.9}
+.hero h4{margin:4px 0 0;font-family:var(--serif);font-size:26px;letter-spacing:-.03em}
+.rows{padding:14px 16px 16px;display:flex;flex-direction:column;gap:12px}
+.row{display:flex;align-items:center;gap:10px;width:100%;border:0;background:transparent;text-align:left;padding:0}
+.thumb{width:46px;height:46px;border-radius:14px;flex:none}
+.t1{background:linear-gradient(135deg,#fed7aa,#c2410c)}
+.t2{background:linear-gradient(135deg,#e9d5ff,#6d28d9)}
+.t3{background:linear-gradient(135deg,#bbf7d0,#15803d)}
+.meta{flex:1;min-width:0}
+.meta b{display:block;font-size:13px}
+.meta span{font-size:11px;color:var(--muted)}
+.price{font-size:13px;font-weight:650}
+.tabbar{height:58px;background:rgba(255,251,245,.94);border-top:1px solid var(--line);display:flex;align-items:center;justify-content:space-around;font-size:11px;color:var(--muted);margin-top:auto}
+.tabbar .on{color:var(--ink);font-weight:650}
+
+.detail,.cart{padding:12px 16px 24px}
+.back{border:0;background:transparent;color:var(--muted);padding:0 0 8px;font-size:13px}
+.detail h3,.cart h3{margin:0 0 6px;font-family:var(--serif);font-size:24px}
+.detail .lead{margin:0 0 14px;color:var(--muted);font-size:13px}
+.sizes{display:flex;gap:6px;margin:0 0 16px}
+.cta{flex:1;border:0;background:var(--ink);color:#fff;border-radius:12px;padding:12px;font-weight:650;width:100%}
+.cta-block{display:flex;gap:8px;align-items:center}
+.cart-item{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--line)}
+.empty{font-size:12px;color:var(--muted)}
+
+/* desktop */
+.desk-only{display:none}
+.web-side{background:#f3eee4;padding:20px 16px;border-right:1px solid var(--line);min-height:100%}
+.web-side h3{margin:0 0 16px;font-family:var(--serif);font-size:22px}
+.web-side a{display:block;color:var(--muted);text-decoration:none;padding:4px 0}
+.web-side a.on{color:var(--ink);font-weight:650}
+.web-main{padding:20px}
+.web-hero{border:0;width:100%;margin:0;border-radius:16px;min-height:180px;padding:22px;color:#fff;text-align:left;display:flex;flex-direction:column;justify-content:flex-end;background:linear-gradient(165deg,#d97706,#9a3412 62%,#7c2d12)}
+.web-hero h4{margin:6px 0 0;font-family:var(--serif);font-size:32px}
+.web-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:16px}
+.web-card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px;text-align:left;width:100%}
+
+@media (min-width:800px){
+  .app-shell{display:grid;grid-template-columns:200px 1fr;grid-template-rows:auto auto auto 1fr;min-height:100%}
+  .desk-only{display:block}
+  .mob-only{display:none}
+  .region-side{grid-row:1 / -1}
+  .web-main{grid-column:2}
+}
+
+/* review-only: foldable regions */
+.region-bar{display:none}
+html.is-review .region.is-collapsed > .region-bar{
+  display:flex;align-items:center;gap:6px;width:100%;border:0;border-bottom:1px dashed rgba(28,23,18,.12);
+  background:rgba(28,23,18,.045);color:var(--muted);font-size:11px;letter-spacing:.04em;padding:6px 10px;text-align:left
+}
+html.is-review .region.is-collapsed > .region-bar::before{content:"";width:0;height:0;border-left:4px solid transparent;border-right:4px solid transparent;border-top:5px solid currentColor;transform:rotate(-90deg)}
+html.is-review .region.is-collapsed > .region-body{display:none}
+
+/* visual pins */
+html.is-annotate{cursor:crosshair}
+.pin{position:absolute;width:22px;height:22px;border-radius:50% 50% 50% 0;background:#b4451a;color:#fff;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;transform:translate(-50%,-100%) rotate(-45deg);box-shadow:0 4px 10px rgba(180,69,26,.35);z-index:5;cursor:pointer;border:0;padding:0}
+.pin span{transform:rotate(45deg)}
+.pin.active{background:#1c1712;z-index:6}
+.pin-layer{position:fixed;inset:0;pointer-events:none;z-index:5}
+.pin-layer .pin{pointer-events:auto}
+
+@media (min-width:800px){
+  .hero.web-hero-slot,.hero{margin:0;width:100%;border-radius:16px;min-height:180px;padding:22px;text-decoration:none}
+  .hero.web-hero-slot h4{font-size:32px}
+  .region[data-region="hero"],.region[data-region="list"]{grid-column:2}
+  .region[data-region="list"]{padding:0 20px 20px}
+  .region[data-region="hero"]{padding:20px 20px 0}
+  .web-grid{display:grid}
+}
+@media (max-width:799px){
+  .web-grid{display:none}
+}

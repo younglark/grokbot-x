@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>晨光咖啡 App 改版验收</title>
+  <link rel="stylesheet" href="assets/app.css?v=11">
+</head>
+<body>
+  <div class="app">
+    <header class="top">
+      <div class="brand">
+        <p class="eyebrow">预制验收模板</p>
+        <h1>晨光咖啡 App 改版验收</h1>
+      </div>
+      <p class="fill-meta" id="fillMeta">已填 0 / 5 个场景</p>
+    </header>
+    <nav class="tabs" id="tabs" role="tablist" aria-label="验收场景"></nav>
+    <div class="main">
+      <section class="stage" id="stage" aria-live="polite"></section>
+      <aside class="panel" id="panel"></aside>
+    </div>
+    <footer class="dock">
+      <label class="attach">
+        <span class="attach-label">附件</span>
+        <input id="files" type="file" accept="image/*,video/*,*/*" multiple>
+        <span class="attach-btn">选择文件</span>
+        <span id="fileHint">可附截图、录屏或其他文件</span>
+      </label>
+      <button class="primary" id="copyAll" type="button">复制全部反馈</button>
+    </footer>
+  </div>
+  <div class="toast" id="toast" role="status"></div>
+  <script src="assets/app.js?v=11"></script>
+</body>
+</html>

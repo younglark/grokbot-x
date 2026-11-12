@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>晨光咖啡 · 登录</title>
+  <link rel="stylesheet" href="ui.css">
+</head>
+<body class="page-login">
+  <form class="login" id="loginForm" action="#" method="post">
+    <h2>欢迎回来</h2>
+    <p class="sub">登录后即可点单、查看会员积分与附近门店。</p>
+    <div class="fieldline"><label class="empty" for="email">邮箱</label><input id="email" name="email" type="email" autocomplete="username" value="you@example.com" required></div>
+    <div class="fieldline"><label class="empty" for="password">密码</label><input id="password" name="password" type="password" autocomplete="current-password" value="password" required></div>
+    <button class="login-btn" type="submit">登录</button>
+    <p class="flash" id="flash">已登录（示例，不会提交到服务器）。</p>
+  </form>
+  <script src="review-bridge.js"></script>
+  <script src="login.js"></script>
+</body>
+</html>

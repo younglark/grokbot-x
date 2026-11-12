@@ -1,0 +1,7 @@
+{
+  "v": 1,
+  "title": "晨光咖啡 App 改版验收",
+  "entry": "index.html",
+  "scene": "bundle",
+  "tabs": ["visual", "animation", "prototype", "responsive", "general"]
+}
