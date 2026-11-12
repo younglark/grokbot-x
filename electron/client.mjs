@@ -34,7 +34,7 @@ async function pickPort(preferred) {
  * Attach to a running client or launch a new one.
  * @returns {{port:number, grokPid:number, attached:boolean}}
  */
-export async function ensureClient(plat, cfg, { confirm, notify, stateDir, forceRestart = false } = {}) {
+export async function ensureClient(plat, cfg, { confirm, notify, stateDir, forceRestart = false, allowRestart = true } = {}) {
   const L = cfg.launcher || {};
   const bin = plat.findGrokBin(L.grokBotBin);
   if (!bin) {
@@ -56,7 +56,13 @@ export async function ensureClient(plat, cfg, { confirm, notify, stateDir, force
     if (a.port && !isLoopback(a.address)) {
       const msg = `Grok Bot 的调试端口绑定在 ${a.address}，不只是本机。为安全起见 grokbot-x 不会挂接。请关闭后用 grokbot-x 重新启动。`;
       notify?.('grokbot-x', msg, true);
+      if (!allowRestart) return { port: 0, grokPid: p.pid, attached: false, bin, reason: 'debug port not loopback' };
       throw new Error('debug port not loopback');
+    }
+    // 「打开 Grok Bot」 may attach if possible, but must not relaunch a running client.
+    if (!allowRestart) {
+      log.info(`already running (pid ${p.pid}) without a usable loopback DevTools port; not restarting`);
+      return { port: 0, grokPid: p.pid, attached: false, bin, reason: 'no debug port' };
     }
     const ok = confirm
       ? confirm('grokbot-x', 'Grok Bot 正在运行，但没有开启本机调试端口。\n\ngrokbot-x 需要重启 Grok Bot（调试端口只监听 127.0.0.1）。\n未保存的输入可能丢失。现在重启吗？', '重启', '取消')

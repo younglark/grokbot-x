@@ -1,7 +1,7 @@
 // Unit tests for platform branches; they run on any OS by injecting a fake system.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { makePlatform, parseClientArgs, parseMacPs, parseWinCim, samePath, isLoopback } from '../core/platform.mjs';
+import { makePlatform, parseClientArgs, parseMacPs, parseWinCim, samePath, isLoopback, parseWmctrlLxp, isOfficialGrokWindow, isGrokbotXWindow, pickLinuxWindow, buildWinFocusScript } from '../core/platform.mjs';
 
 const files = (list) => ({ isFile: (p) => list.includes(p), exists: (p) => list.includes(p) });
 
@@ -99,4 +99,137 @@ test('helpers', () => {
   assert.equal(samePath('/a/b/', '/a/B', 'linux'), false);
   assert.equal(isLoopback(null), true);
   assert.equal(isLoopback('0.0.0.0'), false);
+});
+
+const WMCTRL = `/usr/bin/wmctrl`;
+const XDOTOOL = `/usr/bin/xdotool`;
+const wmList = [
+  '0x00a00001  0 4242 grok-bot.Grok Bot host Grok Bot',
+  '0x00b00001  0 99 grokbot-x.grokbot-x host 图片批注',
+  '0x00c00001  0 108653 grok-bot.Grok Bot host Grok Bot Research',
+].join('\n');
+
+function linuxPlat({ whichTools = { wmctrl: WMCTRL }, list = wmList, exec } = {}) {
+  const calls = [];
+  const execFile = exec || ((file, args = []) => {
+    calls.push([file, ...args]);
+    if (file === WMCTRL && args[0] === '-lxp') return list;
+    return '';
+  });
+  const plat = makePlatform({
+    platform: 'linux',
+    env: { DISPLAY: ':0' },
+    home: '/h',
+    which: (n) => whichTools[n] || null,
+    execFile,
+  });
+  return { plat, calls };
+}
+
+test('Linux focus uses wmctrl, prefers the known pid, and skips the 图片批注 window', () => {
+  const { plat, calls } = linuxPlat();
+  const r = plat.focusOfficialWindow({ pid: 4242 });
+  assert.equal(r.ok, true);
+  assert.equal(r.method, 'wmctrl');
+  assert.equal(r.id, '0x00a00001');
+  assert.ok(calls.some((c) => c[0] === WMCTRL && c.includes('-lxp')));
+  assert.ok(calls.some((c) => c.includes('-a') && c.includes('0x00a00001')));
+  assert.ok(calls.some((c) => c.includes('remove,hidden') && c.includes('0x00a00001')));
+  assert.ok(!calls.some((c) => c.includes('0x00b00001') || c.includes('0x00c00001')));
+});
+
+test('Linux focus falls back to xdotool and ignores grokbot-x window names', () => {
+  const calls = [];
+  const execFile = (file, args = []) => {
+    calls.push([file, ...args]);
+    if (args[0] === 'search' && args.includes('--pid')) return '0xb01\n0xa01';
+    if (args[0] === 'getwindowname' && args[1] === '0xb01') return '图片批注';
+    if (args[0] === 'getwindowname' && args[1] === '0xa01') return 'Grok Bot';
+    return '';
+  };
+  const plat = makePlatform({
+    platform: 'linux', env: { DISPLAY: ':0' }, home: '/h',
+    which: (n) => (n === 'xdotool' ? XDOTOOL : null),
+    execFile,
+  });
+  const r = plat.focusOfficialWindow({ pid: 4242 });
+  assert.equal(r.ok, true);
+  assert.equal(r.method, 'xdotool');
+  assert.equal(r.id, '0xa01');
+  assert.ok(calls.some((c) => c[0] === XDOTOOL && c.includes('--pid') && c.includes('4242')));
+  assert.ok(calls.some((c) => c.includes('windowactivate') && c.includes('0xa01')));
+  assert.ok(!calls.some((c) => c.includes('windowactivate') && c.includes('0xb01')));
+});
+
+test('Linux focus reports a clear failure when no tool or window is available', () => {
+  const none = makePlatform({ platform: 'linux', env: { DISPLAY: ':0' }, home: '/h', which: () => null, execFile: () => '' });
+  assert.deepEqual(none.focusOfficialWindow({ pid: 1 }), { ok: false, reason: 'wmctrl/xdotool not found' });
+  const empty = linuxPlat({ list: '0x00b00001  0 99 grokbot-x.grokbot-x host 图片批注' });
+  const r = empty.plat.focusOfficialWindow({ pid: 4242 });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'official window not found');
+});
+
+test('macOS focus activates the official bundle id and does not launch a new instance', () => {
+  const calls = [];
+  const plat = makePlatform({
+    platform: 'darwin', env: {}, home: '/Users/u',
+    execFile: (file, args = []) => { calls.push([file, ...args]); return ''; },
+  });
+  const r = plat.focusOfficialWindow({ pid: 7 });
+  assert.equal(r.ok, true);
+  assert.equal(r.method, 'osascript');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], 'osascript');
+  const script = calls[0].slice(1).join(' ');
+  assert.match(script, /com\.anysphere\.sand/);
+  assert.match(script, /System Events/);
+  assert.doesNotMatch(script, /\bopen\b/);
+  assert.doesNotMatch(script, / -n /);
+  assert.doesNotMatch(script, /tell application "Grok Bot" to activate/);
+  const fail = makePlatform({
+    platform: 'darwin', env: {}, home: '/Users/u',
+    execFile: () => { throw new Error('osascript failed'); },
+  });
+  assert.equal(fail.focusOfficialWindow().ok, false);
+});
+
+test('Windows focus runs PowerShell against Grok Bot.exe / AppUserModelID and not grokbot-x', () => {
+  const calls = [];
+  const plat = makePlatform({
+    platform: 'win32',
+    env: { LOCALAPPDATA: 'C:\\L', APPDATA: 'C:\\R' },
+    home: 'C:\\u',
+    execFile: (file, args = []) => { calls.push([file, ...args]); return ''; },
+  });
+  const r = plat.focusOfficialWindow({ pid: 4242 });
+  assert.equal(r.ok, true);
+  assert.equal(r.method, 'powershell');
+  assert.equal(calls[0][0], 'powershell.exe');
+  const ps = calls[0].join(' ');
+  assert.match(ps, /4242/);
+  assert.match(ps, /Grok Bot\.exe/);
+  assert.match(ps, /com\.anysphere\.sand/);
+  assert.match(ps, /SetForegroundWindow/);
+  assert.match(ps, /ShowWindow/);
+  assert.match(ps, /图片批注/);
+  assert.match(ps, /grokbot-x/);
+  assert.doesNotMatch(ps, /Start-Process/);
+  const script = buildWinFocusScript(0);
+  assert.match(script, /Grok Bot\.exe/);
+  assert.doesNotMatch(script, /\$targetPid = 0\d/);
+});
+
+test('wmctrl parser and official-window picker', () => {
+  const wins = parseWmctrlLxp(wmList + '\n');
+  assert.equal(wins.length, 3);
+  assert.equal(wins[0].pid, 4242);
+  assert.equal(isOfficialGrokWindow(wins[0].rest), true);
+  assert.equal(isOfficialGrokWindow(wins[1].rest), false);
+  assert.equal(isGrokbotXWindow(wins[1].rest), true);
+  assert.equal(pickLinuxWindow(wins, 4242).id, '0x00a00001');
+  assert.equal(pickLinuxWindow(wins, 99), null); // pid belongs to 图片批注; do not activate it
+  assert.equal(pickLinuxWindow(wins, 108653).id, '0x00c00001');
+  assert.equal(pickLinuxWindow(wins, 0)?.id || pickLinuxWindow(wins).id, '0x00a00001');
+  assert.equal(pickLinuxWindow(wins, 1), null);
 });

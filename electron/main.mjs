@@ -7,6 +7,7 @@ import { makePlatform } from '../core/platform.mjs';
 import { APP_DIR, loadConfig, saveUserConfig, appVersion } from '../core/config.mjs';
 import { createLogger } from '../core/log.mjs';
 import { ensureClient } from './client.mjs';
+import { openOfficialClient, restartOfficialClient, clientMenuItems } from './client-actions.mjs';
 import { registerEditorScheme, handleEditorProtocol, closeEditor, configureEditor, openImageFile, requestSelfTestExport, exportsRoot, showEditor, hasEditorWindow, onEditorChange } from './editor.mjs';
 
 registerEditorScheme();
@@ -65,12 +66,15 @@ function rebuildMenu() {
     });
   }
   const connected = status === 'connected';
+  const running = officialRunning().length > 0;
   const auto = app.getLoginItemSettings().openAtLogin;
+  const [openItem, restartItem] = clientMenuItems({ running });
   tray.setToolTip(connected ? `grokbot-x：已连接到 127.0.0.1:${lastClient.port}` : 'grokbot-x：未连接');
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: connected ? `状态：已连接（127.0.0.1:${lastClient.port}）` : `状态：${status === 'connecting' ? '正在连接…' : '未连接'}`, enabled: false },
     { type: 'separator' },
-    { label: connected ? '重启 Grok Bot（带调试口）' : '启动 Grok Bot（带调试口）', click: () => connect({ forceRestart: connected }) },
+    { ...openItem, click: () => { openOfficial().catch((e) => log.error(`open Grok Bot failed: ${e.message}`)); } },
+    { ...restartItem, click: () => { restartOfficial().catch((e) => log.error(`restart Grok Bot failed: ${e.message}`)); } },
     { type: 'separator' },
     { label: '显示图片批注窗口', enabled: hasEditorWindow(), click: () => { showEditor(); } },
     { label: '功能', submenu: features.length ? features : [{ label: '（无）', enabled: false }] },
@@ -101,11 +105,45 @@ async function toggleFeature(name, enabled) {
   rebuildMenu();
 }
 
-async function connect({ forceRestart = false } = {}) {
+function officialUserDataDir() {
+  return cfgWrap.cfg.launcher?.userDataDir || '';
+}
+
+function officialRunning() {
+  return plat.mainInstances(officialUserDataDir());
+}
+
+function officialActionDeps() {
+  return {
+    plat,
+    userDataDir: officialUserDataDir(),
+    status,
+    confirm,
+    connect,
+    getGrokPid: () => lastClient.grokPid,
+    log,
+  };
+}
+
+async function openOfficial() {
+  return openOfficialClient(officialActionDeps());
+}
+
+async function restartOfficial() {
+  return restartOfficialClient(officialActionDeps());
+}
+
+async function connect({ forceRestart = false, allowRestart = true } = {}) {
   status = 'connecting';
   rebuildMenu();
   try {
-    const r = await ensureClient(plat, cfgWrap.cfg, { confirm, notify, stateDir: STATE, forceRestart });
+    const r = await ensureClient(plat, cfgWrap.cfg, { confirm, notify, stateDir: STATE, forceRestart, allowRestart });
+    if (!r.port) {
+      lastClient = { ...lastClient, grokPid: r.grokPid || lastClient.grokPid, attached: false };
+      status = 'disconnected';
+      rebuildMenu();
+      return r;
+    }
     lastClient = r;
     if (kernel) {
       await kernel.shutdown();
@@ -211,7 +249,7 @@ if (process.argv.includes('--help') || process.argv.includes('-h')) {
   process.stdout.write(`grokbot-x ${appVersion()} (Electron)
 Usage: grokbot-x [--help] [--version] [--dry-run] [--open-image <png>] [--self-test-export]
   Starts the tray app, attaches to Grok Bot if it already has a loopback DevTools port,
-  otherwise wait for the tray action "启动 Grok Bot". DevTools is always bound to 127.0.0.1.
+  otherwise wait for the tray action "打开 Grok Bot". DevTools is always bound to 127.0.0.1.
   --open-image FILE   Open the in-app annotation window with a local image (dev / self-test).
   --self-test-export  After the editor is open, save feedback into the exports directory.
 `);
@@ -260,13 +298,13 @@ if (!gotLock) {
       app.setLoginItemSettings({ openAtLogin: wantLogin, name: 'grokbot-x' });
     }
     // Attach automatically when the official client is already running with a debug port.
-    // If it is not running, wait for the user to choose "启动" from the tray (or log the need).
+    // If it is not running, wait for the user to choose 「打开 Grok Bot」 from the tray (or log the need).
     const ud = cfgWrap.cfg.launcher?.userDataDir || '';
     const running = plat.mainInstances(ud);
     if (running.length || process.env.GROK_BOT_CDP_PORT) {
       await connect({ forceRestart: false });
     } else {
-      log.info('Grok Bot is not running; use the tray menu to start it');
+      log.info('Grok Bot is not running; use the tray item 「打开 Grok Bot」');
       status = 'disconnected';
       rebuildMenu();
     }

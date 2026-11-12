@@ -18,6 +18,8 @@ export function makePlatform(sys = {}) {
   const isFile = sys.isFile || ((p) => { try { return fs.statSync(p).isFile(); } catch { return false; } });
   const readdir = sys.readdir || ((p) => { try { return fs.readdirSync(p); } catch { return []; } });
   const which = sys.which || ((name) => whichImpl(name, platform, env, isFile));
+  const execFile = sys.execFile || sys.exec || ((file, args = [], opts = {}) => execFileSync(file, args, { encoding: 'utf8', maxBuffer: 32 << 20, ...opts }));
+  const spawn = sys.spawn || ((file, args = [], opts = {}) => spawnSync(file, args, opts));
   const P = platform === 'win32' ? path.win32 : path.posix;
 
   const winLocal = env.LOCALAPPDATA || P.join(home, 'AppData', 'Local');
@@ -226,6 +228,90 @@ export function makePlatform(sys = {}) {
     return !alive(pid);
   }
 
+  /**
+   * Bring the official Grok Bot main window to the front. Never launches a
+   * second instance and never activates grokbot-x (including 「图片批注」).
+   * Returns { ok, reason?, method?, id? }. Does not throw.
+   */
+  function focusOfficialWindow({ pid } = {}) {
+    try {
+      if (platform === 'linux') return focusLinux(pid);
+      if (platform === 'darwin') return focusMac();
+      if (platform === 'win32') return focusWin(pid);
+      return { ok: false, reason: 'unsupported-platform' };
+    } catch (e) {
+      return { ok: false, reason: e.message || String(e) };
+    }
+  }
+
+  function focusLinux(pid) {
+    const wmctrl = which('wmctrl');
+    const xdotool = which('xdotool');
+    if (wmctrl) {
+      let text = '';
+      try { text = String(execFile(wmctrl, ['-lxp']) || ''); } catch { text = ''; }
+      const win = pickLinuxWindow(parseWmctrlLxp(text), pid);
+      if (win) {
+        try { execFile(wmctrl, ['-i', '-r', win.id, '-b', 'remove,hidden']); } catch { /* not hidden */ }
+        execFile(wmctrl, ['-i', '-a', win.id]);
+        return { ok: true, method: 'wmctrl', id: win.id };
+      }
+    }
+    if (xdotool) {
+      const ids = [];
+      const search = (args) => {
+        try {
+          const out = String(execFile(xdotool, args) || '').trim();
+          for (const id of out.split('\n')) if (id) ids.push(id);
+        } catch { /* no match (xdotool exits 1) */ }
+      };
+      if (pid) search(['search', '--pid', String(pid)]);
+      if (!ids.length) {
+        search(['search', '--class', 'Grok Bot']);
+        search(['search', '--classname', 'grok-bot']);
+        search(['search', '--name', 'Grok Bot']);
+      }
+      const seen = new Set();
+      for (const id of ids) {
+        if (seen.has(id)) continue;
+        seen.add(id);
+        let name = '';
+        try { name = String(execFile(xdotool, ['getwindowname', id]) || ''); } catch { /* ignore */ }
+        if (isGrokbotXWindow(name)) continue;
+        try {
+          try { execFile(xdotool, ['windowmap', id]); } catch { /* already mapped */ }
+          execFile(xdotool, ['windowactivate', '--sync', id]);
+          return { ok: true, method: 'xdotool', id };
+        } catch { continue; }
+      }
+    }
+    if (!wmctrl && !xdotool) return { ok: false, reason: 'wmctrl/xdotool not found' };
+    return { ok: false, reason: 'official window not found' };
+  }
+
+  function focusMac() {
+    // System Events + bundle id: activate the official app if it is already
+    // running. Unlike `open -a` / `tell application … to activate`, this does
+    // not launch a second instance when the process is missing.
+    const script = `tell application "System Events" to set frontmost of first process whose bundle identifier is "${GROK_BUNDLE_ID}" to true`;
+    try {
+      execFile('osascript', ['-e', script], { stdio: ['ignore', 'ignore', 'pipe'] });
+      return { ok: true, method: 'osascript' };
+    } catch (e) {
+      return { ok: false, reason: e.message || 'osascript failed' };
+    }
+  }
+
+  function focusWin(pid) {
+    const ps = buildWinFocusScript(pid);
+    try {
+      execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-STA', '-Command', ps], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
+      return { ok: true, method: 'powershell' };
+    } catch (e) {
+      return { ok: false, reason: e.message || 'official window not found' };
+    }
+  }
+
   // ---------- browsers for feature windows ----------
   function browserCandidates(configured) {
     const out = [];
@@ -263,7 +349,7 @@ export function makePlatform(sys = {}) {
     platform, env, home, path: P,
     stateDir, configDir, grokCandidates, findGrokBin, macAppBundle, looksLikeGrokExe,
     listProcesses, mainInstances, needsNoSandbox, launchSpec,
-    confirm, notify, stopClient, browserCandidates, findBrowser, hasGui, exists,
+    confirm, notify, stopClient, focusOfficialWindow, browserCandidates, findBrowser, hasGui, exists,
   };
 }
 
@@ -323,6 +409,103 @@ export function parseWinCim(text) {
   try { data = JSON.parse(t); } catch { return []; }
   const arr = Array.isArray(data) ? data : [data];
   return arr.filter(Boolean).map((p) => ({ pid: Number(p.ProcessId), exe: p.ExecutablePath || '', cmd: p.CommandLine || '' }));
+}
+
+/** Parse `wmctrl -lxp` lines into {id, desktop, pid, rest}. `rest` is class + host + title. */
+export function parseWmctrlLxp(text) {
+  const out = [];
+  for (const raw of String(text || '').split('\n')) {
+    const line = raw.trimEnd();
+    if (!line.trim()) continue;
+    const m = /^(0x[0-9a-fA-F]+)\s+(-?\d+)\s+(\d+)\s+(.*)$/.exec(line);
+    if (!m) continue;
+    out.push({ id: m[1], desktop: Number(m[2]), pid: Number(m[3]), rest: m[4], line });
+  }
+  return out;
+}
+
+/** True for grokbot-x itself (tray app or the in-app 「图片批注」 editor). */
+export function isGrokbotXWindow(text) {
+  const s = String(text || '');
+  return /图片批注/.test(s) || /\bgrokbot-x\b/i.test(s);
+}
+
+/** True for an official Grok Bot window, never grokbot-x. */
+export function isOfficialGrokWindow(text) {
+  if (isGrokbotXWindow(text)) return false;
+  const s = String(text || '');
+  return /\bgrok-bot\b/i.test(s) || /grok bot/i.test(s);
+}
+
+export function pickLinuxWindow(windows, pid) {
+  const list = Array.isArray(windows) ? windows : [];
+  const official = list.filter((w) => isOfficialGrokWindow(w.rest));
+  if (pid) {
+    const id = Number(pid);
+    const hit = official.find((w) => w.pid === id);
+    if (hit) return hit;
+    const byPid = list.find((w) => w.pid === id && !isGrokbotXWindow(w.rest));
+    if (byPid) return byPid;
+    return null; // never fall back to a different instance (e.g. a research profile)
+  }
+  return official[0] || null;
+}
+
+
+/** PowerShell that restores and foregrounds the official "Grok Bot" window. */
+export function buildWinFocusScript(pid) {
+  const target = Number(pid) > 0 ? String(Number(pid)) : '0';
+  return `
+$ErrorActionPreference = 'Stop'
+$targetPid = ${target}
+# Official client AppUserModelID is com.anysphere.sand; do not activate grokbot-x.
+Add-Type @"
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+public static class GrokWinFocus {
+  public delegate bool EnumProc(IntPtr hWnd, IntPtr lParam);
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr lp);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder sb, int nMaxCount);
+  public const int SW_RESTORE = 9;
+}
+"@
+$pids = @()
+if ($targetPid -gt 0) { $pids = @($targetPid) }
+else { $pids = @(Get-CimInstance Win32_Process -Filter "Name='Grok Bot.exe'" | ForEach-Object { $_.ProcessId }) }
+$found = $false
+foreach ($procId in $pids) {
+  $p = $null
+  try { $p = Get-CimInstance Win32_Process -Filter "ProcessId=$procId" } catch { $p = $null }
+  if (-not $p) { continue }
+  if ($p.Name -ne 'Grok Bot.exe') { continue }
+  $script:hwnd = [IntPtr]::Zero
+  $cb = [GrokWinFocus+EnumProc]{
+    param($h, $l)
+    $wid = [uint32]0
+    [void][GrokWinFocus]::GetWindowThreadProcessId($h, [ref]$wid)
+    if ($wid -ne $procId) { return $true }
+    if (-not [GrokWinFocus]::IsWindowVisible($h)) { return $true }
+    $sb = New-Object System.Text.StringBuilder 512
+    [void][GrokWinFocus]::GetWindowText($h, $sb, $sb.Capacity)
+    $title = $sb.ToString()
+    if ($title -eq '图片批注' -or $title -like '*grokbot-x*') { return $true }
+    $script:hwnd = $h
+    return $false
+  }
+  [void][GrokWinFocus]::EnumWindows($cb, [IntPtr]::Zero)
+  if ($script:hwnd -eq [IntPtr]::Zero) { continue }
+  if ([GrokWinFocus]::IsIconic($script:hwnd)) { [void][GrokWinFocus]::ShowWindow($script:hwnd, 9) }
+  if ([GrokWinFocus]::SetForegroundWindow($script:hwnd)) { $found = $true; break }
+  if ((New-Object -ComObject WScript.Shell).AppActivate([int]$procId)) { $found = $true; break }
+}
+if (-not $found) { exit 1 }
+`.trim();
 }
 
 function whichImpl(name, platform, env, isFile) {
