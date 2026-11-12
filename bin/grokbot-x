@@ -1,0 +1,198 @@
+#!/usr/bin/env bash
+# grokbot-x launcher: start (or reuse) the official Grok Bot with a loopback-only
+# DevTools port, then start the grokbot-x daemon as a user process.
+# The official client is never modified.
+set -euo pipefail
+
+SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+APP_DIR="$(cd "$(dirname "$SELF")/.." && pwd)"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/grokbot-x"
+STATE_DIR="${GROKBOT_X_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/grokbot-x}"
+LAUNCHER_CONF="$CONFIG_DIR/launcher.conf"
+mkdir -p "$STATE_DIR" && chmod 700 "$STATE_DIR"
+LOG="$STATE_DIR/grokbot-x.log"
+
+# launcher.conf may set GROK_BOT_BIN / GROK_BOT_CDP_PORT / GROK_BOT_USER_DATA_DIR / GROK_BOT_EXTRA_ARGS.
+# Environment variables win over the file.
+if [[ -f "$LAUNCHER_CONF" ]]; then
+  _env_bin="${GROK_BOT_BIN-}"; _env_port="${GROK_BOT_CDP_PORT-}"; _env_ud="${GROK_BOT_USER_DATA_DIR-}"
+  # shellcheck disable=SC1090
+  source "$LAUNCHER_CONF"
+  [[ -n "$_env_bin" ]] && GROK_BOT_BIN="$_env_bin"
+  [[ -n "$_env_port" ]] && GROK_BOT_CDP_PORT="$_env_port"
+  [[ -n "$_env_ud" ]] && GROK_BOT_USER_DATA_DIR="$_env_ud"
+fi
+
+NODE="$APP_DIR/runtime/node/bin/node"
+[[ -x "$NODE" ]] || NODE="$(command -v node || true)"
+DEFAULT_PORT="$("$NODE" -e 'try{console.log(require(process.argv[1]).cdpPort||29229)}catch{console.log(29229)}' "$APP_DIR/config/default.json" 2>/dev/null || echo 29229)"
+PORT="${GROK_BOT_CDP_PORT:-$DEFAULT_PORT}"
+
+log() { printf '[%s CST] launcher %s\n' "$(TZ=Asia/Shanghai date '+%F %T')" "$*" | tee -a "$LOG" >&2; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+info_box() {
+  if [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]] && have zenity; then
+    zenity --"${2:-info}" --title=grokbot-x --no-wrap --text="$1" >/dev/null 2>&1 || true
+  else
+    printf '%s\n' "$1" >&2
+  fi
+}
+
+ask() { # ask "question" -> 0 yes / 1 no
+  if [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]] && have zenity; then
+    zenity --question --title=grokbot-x --no-wrap --ok-label=重启 --cancel-label=取消 --text="$1" >/dev/null 2>&1
+    return $?
+  fi
+  if [[ -t 0 ]]; then
+    local a; read -r -p "$1 [y/N] " a; [[ "$a" =~ ^[Yy] ]]; return $?
+  fi
+  return 1
+}
+
+[[ -x "$NODE" ]] || { info_box "grokbot-x 缺少 Node 运行时：$APP_DIR/runtime/node" error; exit 1; }
+
+# ---------- locate the official client ----------
+find_grok_bin() {
+  local c
+  for c in "${GROK_BOT_BIN:-}" "/opt/Grok Bot/grok-bot" "/opt/grok-bot/grok-bot" "/usr/bin/grok-bot" "/usr/lib/grok-bot/grok-bot"; do
+    [[ -n "$c" && -x "$c" && ! -d "$c" ]] && { readlink -f "$c"; return 0; }
+  done
+  shopt -s nullglob nocaseglob
+  for c in "$HOME"/Applications/*grok*bot*.AppImage "$HOME"/Applications/Grok*.AppImage; do
+    [[ -x "$c" ]] && { readlink -f "$c"; shopt -u nullglob nocaseglob; return 0; }
+  done
+  shopt -u nullglob nocaseglob
+  return 1
+}
+
+GROK_BIN="$(find_grok_bin || true)"
+if [[ -z "$GROK_BIN" ]]; then
+  info_box "没有找到官方 Grok Bot 客户端。\n请先安装 Grok Bot，或在 $LAUNCHER_CONF 写入：\nGROK_BOT_BIN=/path/to/grok-bot" error
+  exit 1
+fi
+
+# ---------- inspect running instances ----------
+# Main processes of the client: same executable, no --type= argument.
+# Electron may rewrite argv into one space-joined string, so match on the joined
+# command line instead of NUL-separated fields. AppImages re-exec from a
+# /tmp/.mount_* dir, so also accept any executable named grok-bot.
+cmdline_of() { tr '\0' ' ' < "/proc/$1/cmdline" 2>/dev/null || true; }
+
+main_pids() {
+  local pid exe args
+  for pid in $(pgrep -f -- 'grok-bot' 2>/dev/null || true); do
+    [[ "$pid" == "$$" ]] && continue
+    exe="$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)"
+    case "$exe" in
+      "$GROK_BIN"|*/grok-bot) ;;
+      *) continue ;;
+    esac
+    args=" $(cmdline_of "$pid") "
+    [[ "$args" == *" --type="* ]] && continue
+    if [[ -n "${GROK_BOT_USER_DATA_DIR:-}" ]]; then
+      [[ "$args" == *" --user-data-dir=$GROK_BOT_USER_DATA_DIR "* ]] || continue
+    else
+      [[ "$args" == *" --user-data-dir="* ]] && continue
+    fi
+    echo "$pid"
+  done
+}
+
+pid_debug_port() {
+  cmdline_of "$1" | grep -oE -- '--remote-debugging-port=[0-9]+' | head -1 | cut -d= -f2
+}
+pid_debug_addr() {
+  cmdline_of "$1" | grep -oE -- '--remote-debugging-address=[^ ]+' | head -1 | cut -d= -f2
+}
+
+devtools_ok() {
+  "$NODE" -e 'fetch(`http://127.0.0.1:${process.argv[1]}/json/version`,{signal:AbortSignal.timeout(2000)}).then(r=>process.exit(r.ok?0:1),()=>process.exit(1))' "$1"
+}
+
+port_busy() {
+  "$NODE" -e 'const s=require("net").createServer();s.once("error",()=>process.exit(0));s.listen(+process.argv[1],"127.0.0.1",()=>s.close(()=>process.exit(1)))' "$1"
+}
+
+GROK_PID=""
+for pid in $(main_pids); do GROK_PID="$pid"; break; done
+
+if [[ -n "$GROK_PID" ]]; then
+  running_port="$(pid_debug_port "$GROK_PID")"
+  running_addr="$(pid_debug_addr "$GROK_PID")"
+  if [[ -n "$running_port" ]] && [[ -z "$running_addr" || "$running_addr" == "127.0.0.1" || "$running_addr" == "localhost" ]] && devtools_ok "$running_port"; then
+    PORT="$running_port"
+    log "Grok Bot already running (pid $GROK_PID) with DevTools on 127.0.0.1:$PORT; attaching"
+  else
+    if ! ask "Grok Bot 正在运行，但没有开启本机调试端口。\n\ngrokbot-x 需要重启 Grok Bot（只监听 127.0.0.1:$PORT）。\n未保存的输入可能丢失。现在重启吗？"; then
+      log "user declined restart; exiting"
+      exit 0
+    fi
+    log "stopping Grok Bot pid $GROK_PID for relaunch"
+    kill -TERM "$GROK_PID" 2>/dev/null || true
+    for _ in $(seq 1 50); do kill -0 "$GROK_PID" 2>/dev/null || break; sleep 0.2; done
+    if kill -0 "$GROK_PID" 2>/dev/null; then
+      info_box "Grok Bot 没有在 10 秒内退出，请手动关闭后再试。" error
+      exit 1
+    fi
+    GROK_PID=""
+  fi
+fi
+
+if [[ -z "$GROK_PID" ]]; then
+  if port_busy "$PORT"; then
+    for p in $(seq $((PORT + 1)) $((PORT + 50))); do port_busy "$p" || { PORT="$p"; break; }; done
+    log "configured port busy; using 127.0.0.1:$PORT"
+  fi
+  extra=()
+  sandbox="$(dirname "$GROK_BIN")/chrome-sandbox"
+  if [[ "$GROK_BIN" == *.AppImage ]]; then
+    extra+=(--no-sandbox) # AppImage mounts cannot hold a setuid sandbox helper
+  elif [[ ! -u "$sandbox" || "$(stat -c %u "$sandbox" 2>/dev/null || echo 1)" != 0 ]]; then
+    if ! unshare --user --map-root-user true 2>/dev/null; then extra+=(--no-sandbox); fi
+  fi
+  if [[ -n "${GROK_BOT_USER_DATA_DIR:-}" ]]; then
+    mkdir -p "$GROK_BOT_USER_DATA_DIR"
+    export SAND_USER_DATA_DIR="$GROK_BOT_USER_DATA_DIR"
+    extra+=(--user-data-dir="$GROK_BOT_USER_DATA_DIR")
+  fi
+  # shellcheck disable=SC2206
+  [[ -n "${GROK_BOT_EXTRA_ARGS:-}" ]] && extra+=(${GROK_BOT_EXTRA_ARGS})
+  log "starting $GROK_BIN with DevTools 127.0.0.1:$PORT ${extra[*]:-}"
+  setsid "$GROK_BIN" --remote-debugging-port="$PORT" --remote-debugging-address=127.0.0.1 "${extra[@]}" \
+    >>"$STATE_DIR/grok-bot.log" 2>&1 < /dev/null &
+  launched=$!
+  for _ in $(seq 1 120); do devtools_ok "$PORT" && break; sleep 0.25; done
+  if ! devtools_ok "$PORT"; then
+    if ! kill -0 "$launched" 2>/dev/null; then
+      info_box "Grok Bot 启动后立即退出。可能已有一个使用同一数据目录的 Grok Bot 在运行（单实例锁）。\n请先完全退出 Grok Bot 再运行 grokbot-x。日志：$STATE_DIR/grok-bot.log" error
+    else
+      info_box "Grok Bot 启动后调试端口 127.0.0.1:$PORT 没有响应，请查看 $STATE_DIR/grok-bot.log" error
+    fi
+    exit 1
+  fi
+  for pid in $(main_pids); do GROK_PID="$pid"; break; done
+  GROK_PID="${GROK_PID:-$launched}"
+  log "Grok Bot started (pid $GROK_PID)"
+fi
+
+# ---------- daemon ----------
+PID_FILE="$STATE_DIR/daemon.pid"
+if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+  log "daemon already running (pid $(cat "$PID_FILE"))"
+  exit 0
+fi
+setsid "$NODE" "$APP_DIR/core/daemon.mjs" --cdp-port "$PORT" --grok-pid "$GROK_PID" --state-dir "$STATE_DIR" \
+  >>"$STATE_DIR/daemon.log" 2>&1 < /dev/null &
+dpid=$!
+for _ in $(seq 1 40); do
+  grep -q "grokbot-x daemon pid=$dpid" "$STATE_DIR/daemon.log" 2>/dev/null && break
+  kill -0 "$dpid" 2>/dev/null || break
+  sleep 0.25
+done
+if kill -0 "$dpid" 2>/dev/null; then
+  log "daemon started (pid $dpid), log: $STATE_DIR/daemon.log"
+else
+  info_box "grokbot-x 守护进程启动失败，请查看 $STATE_DIR/daemon.log" error
+  exit 1
+fi

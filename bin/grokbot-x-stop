@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Stop the grokbot-x daemon (and the EditHere window it opened). Grok Bot keeps running.
+set -euo pipefail
+STATE_DIR="${GROKBOT_X_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/grokbot-x}"
+PID_FILE="$STATE_DIR/daemon.pid"
+if [[ -f "$PID_FILE" ]] && pid="$(cat "$PID_FILE")" && kill -0 "$pid" 2>/dev/null; then
+  kill -TERM "$pid"
+  for _ in $(seq 1 25); do kill -0 "$pid" 2>/dev/null || break; sleep 0.2; done
+  kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null || true
+  echo "grokbot-x daemon stopped (pid $pid). Grok Bot was not touched."
+else
+  echo "grokbot-x daemon is not running."
+fi
+rm -f "$PID_FILE"
