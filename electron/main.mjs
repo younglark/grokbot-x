@@ -59,7 +59,7 @@ function rebuildMenu() {
   for (const name of names) {
     const on = cfgWrap.cfg.features?.[name]?.enabled !== false;
     features.push({
-      label: name === 'edithere' ? '图片批注（派生自 EditHere）' : name,
+      label: name === 'edithere' ? '图片批注（派生自 EditHere）' : name === 'bot-inspector' ? 'Bot 透视' : name,
       type: 'checkbox',
       checked: on,
       click: () => toggleFeature(name, !on),

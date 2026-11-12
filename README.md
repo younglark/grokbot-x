@@ -4,6 +4,8 @@ Grok Bot 桌面端的非官方 Electron 增强。**不修改官方客户端**：
 
 第一个功能 **图片批注**（内部目录名 `edithere`）：在图片预览窗口的「下载」按钮左边加一个「✎ 编辑」按钮，点击后在 **本应用内的窗口** 打开派生自 [EditHere](https://github.com/Inginnng/EditHere) 的本地编辑器，并自动载入这张原图。导出只保存到本地文件，**不会回填 Grok Bot**。不再调用系统 Chrome，也不再使用上游已经构建好的单文件 HTML。
 
+第二个功能 **Bot 透视**（内部目录名 `bot-inspector`）：在窗口右侧注入一个只读面板，用「现在 / 时间线 / 用量与连接」三个页签展示当前选中 Bot 的运行状态、时间戳和连接配置。数据只从页面里已有的名册对象读取，**不调用官方 RPC，也不改任何状态**。额度数字不在这份名册里，面板不会编造。
+
 > ⚠️ 编辑器源码派生自 EditHere，采用 **PolyForm Noncommercial 1.0.0**，**仅限个人或内部非商业使用**。商业用途需取得 EditHere 作者书面授权（inginnng@163.com）。按上游 [商标政策](features/edithere/editor/TRADEMARK-POLICY.md)，本应用不以 EditHere 为自己的产品名或 Logo；窗口标题为「图片批注」，并注明「派生自 EditHere，与原作者无隶属关系」。许可与来源说明见 `features/edithere/editor/LICENSE`、`NOTICE`、`UPSTREAM.md`。
 
 本项目与 Grok Bot 官方无关，也不受官方支持。
@@ -29,7 +31,8 @@ Grok Bot 桌面端的非官方 Electron 增强。**不修改官方客户端**：
 1. 先安装官方 [Grok Bot](https://cursor.com) 桌面端。
 2. 启动「Grok Bot X」。若 Grok Bot 已在运行且已带本机调试口，会直接挂接、不重启；否则请用托盘菜单里的「启动 Grok Bot（带调试口）」。若 Grok Bot 已在运行但没有调试口，会先征得同意再重启。
 3. 打开对话里的图片预览，点下载按钮左边的「✎ 编辑」，会弹出内置的「图片批注」窗口。再点其他图片会复用同一个窗口。批注后的 JSON / 图片默认保存到状态目录下的 `features/edithere/exports/<时间戳>/`，也可在窗口顶栏点「另存为…」自选位置。
-4. 托盘菜单还可以开关功能、打开日志目录、设置（默认关闭的）开机启动，以及退出。退出本应用不会关闭 Grok Bot。
+4. 挂接成功后，Grok Bot 窗口右侧会出现「Bot 透视」标签，点开即可查看当前选中 Bot 的只读信息；可用面板上的关闭按钮或再次点击标签收起。
+5. 托盘菜单还可以开关功能、打开日志目录、设置（默认关闭的）开机启动，以及退出。退出本应用不会关闭 Grok Bot。
 
 也可以在终端里运行：
 
@@ -53,11 +56,11 @@ GROK_BOT_BIN=/path/to/grok-bot GROK_BOT_CDP_PORT=29229 grokbot-x
 {
   "cdpPort": 29229,
   "launcher": { "openAtLogin": false, "grokBotBin": "", "userDataDir": "" },
-  "features": { "edithere": { "enabled": true, "saveImages": true } }
+  "features": { "edithere": { "enabled": true, "saveImages": true }, "bot-inspector": { "enabled": true } }
 }
 ```
 
-环境变量优先：`GROK_BOT_BIN`、`GROK_BOT_CDP_PORT`、`GROK_BOT_USER_DATA_DIR`、`GROKBOT_X_DISABLE=edithere`。
+环境变量优先：`GROK_BOT_BIN`、`GROK_BOT_CDP_PORT`、`GROK_BOT_USER_DATA_DIR`、`GROKBOT_X_DISABLE=edithere,bot-inspector`。
 
 运行数据（日志、pid、按需保存的原图、编辑器导出）在：
 
@@ -82,6 +85,10 @@ features/edithere/
   editor/build.mjs                生成 build/editor.html
   editor/src/host.js              宿主适配（接收图片、把导出交给 IPC）
   build/editor.html               构建产物（不入库）
+features/bot-inspector/
+  feature.mjs                     功能清单（无主进程消息）
+  format.mjs                      时间、状态文案等纯函数（测试与注入脚本共用）
+  inject.js                       注入只读「Bot 透视」侧栏
 ```
 
 页面通过 CDP binding 发送 `{v:1, feature, type, data}`。内核会校验功能是否启用、`type` 是否在白名单里、消息是否超过 64 KB。

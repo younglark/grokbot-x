@@ -8,6 +8,9 @@
     "edithere": {
       "enabled": true,
       "saveImages": true
+    },
+    "bot-inspector": {
+      "enabled": true
     }
   }
 }
