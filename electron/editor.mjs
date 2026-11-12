@@ -16,6 +16,7 @@ import {
   exportStamp, imageInfo, fillFeedbackImagePaths,
 } from './edithere-ipc.mjs';
 import { createWaitReady, createEditorSession } from './editor-session.mjs';
+import { writeFileList, savedPathsFor } from './clipboard-files.mjs';
 
 export const SCHEME = 'gx-edithere';
 export const EDITOR_URL = `${SCHEME}://app/editor.html`;
@@ -28,6 +29,8 @@ let win = null;
 let ipcReady = false;
 let lastExportDir = '';
 let lastExportFile = '';
+/** Absolute paths written by the latest writeExport, in save order. */
+let lastExportPaths = [];
 let pendingImage = null;
 let hostInfo = { exportDir: '' };
 let selfTestWaiter = null;
@@ -98,6 +101,7 @@ async function writeExport(files, { reveal, pickLocation }) {
   let jsonText = '';
   let jsonName = '';
   let first = '';
+  const paths = [];
   for (const file of files) {
     let buffer = file.buffer;
     const isJson = file.mime === 'application/json' || /\.json$/i.test(file.name);
@@ -112,20 +116,27 @@ async function writeExport(files, { reveal, pickLocation }) {
     }
     const dest = path.join(dir, file.name);
     fs.writeFileSync(dest, buffer, { mode: 0o600 });
+    paths.push(dest);
     if (!first) first = dest;
   }
   lastExportDir = dir;
   lastExportFile = first;
+  lastExportPaths = paths;
   if (reveal && first) {
     try { shell.showItemInFolder(first); } catch (e) { log.warn(`showItemInFolder: ${e.message}`); }
   }
   const message = `已保存到 ${displayPath(dir)}`;
   notifyUser('图片批注', `${message}。可在窗口顶栏点「在文件夹中显示」。不会回填 Grok Bot。`);
-  return { ok: true, dir, file: first, message, jsonText, jsonName };
+  return { ok: true, dir, file: first, paths, message, jsonText, jsonName };
 }
 
-function writeClipboardFiles(files) {
-  const json = files.find((f) => f.mime === 'application/json' || /\.json$/i.test(f.name));
+function isJsonFile(f) {
+  return f.mime === 'application/json' || /\.json$/i.test(f.name);
+}
+
+// Old behaviour, kept as fallback: JSON text + image bitmap in one write.
+function writeTextAndImage(files) {
+  const json = files.find(isJsonFile);
   const image = files.find((f) => /^image\//i.test(f.mime));
   const payload = {};
   if (json) payload.text = json.buffer.toString('utf8');
@@ -137,7 +148,26 @@ function writeClipboardFiles(files) {
     return { ok: false, error: 'nothing to copy' };
   }
   clipboard.write(payload);
-  return { ok: true, copiedText: !!payload.text, copiedImage: !!payload.image };
+  return { ok: true, copiedText: !!payload.text, copiedImage: !!payload.image, method: 'text+image' };
+}
+
+async function writeClipboardFiles(files) {
+  const paths = savedPathsFor(files, lastExportPaths);
+  if (paths.length) {
+    try {
+      const r = await writeFileList(paths, { clipboard });
+      if (r.ok) {
+        log.info(`copied ${r.count} file(s) via ${r.method}`);
+        return { ok: true, copiedFiles: paths.length, paths, method: r.method };
+      }
+      log.warn(`file-list clipboard failed (${r.error}); falling back to text + image`);
+    } catch (e) {
+      log.warn(`file-list clipboard threw (${e.message}); falling back to text + image`);
+    }
+  } else {
+    log.warn('copy-files: no saved paths match; falling back to text + image');
+  }
+  return writeTextAndImage(files);
 }
 
 function isEditorSender(event) {

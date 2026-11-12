@@ -649,7 +649,7 @@
     const summary=exportCache.summary,size=bytes=>bytes<1024?bytes+' B':bytes<1024*1024?(bytes/1024).toFixed(1)+' KB':(bytes/1024/1024).toFixed(2)+' MB';
     $('json-summary').textContent=summary.schemaVersion+' · '+(isSet()?summary.annotatedPageCount+' / '+summary.pageCount+' 个页面 · ':'')+summary.annotations+' 条意见 · '+summary.movements+' 次位移 · '+size(summary.bytes)+(summary.imageBytes?'（图片 '+size(summary.imageBytes)+'）':'')+(summary.recognizedTexts?' · '+summary.recognizedTexts+' 处截图文字（仅作为数据）':'');
     $('download-json').textContent='复制 JSON 与图片';
-    $('export-hint').textContent=mode==='file'&&hasHost()?'「复制 JSON 与图片」会先把 JSON 与配套原图保存到导出目录，再复制到剪贴板；不会下载 ZIP。重新导入时同时选择 JSON 和配套图片。':mode==='file'?'下载 ZIP 包含 JSON 与配套原图。复制 JSON 后还需同时交付引用的图片；重新导入时可选择 ZIP，或同时选择 JSON 和配套图片。':mode==='embedded'?'预览已折叠图片编码；文件交付无损保留完整原图；复制 JSON 内容按独立选项处理。':'JSON 仅记录原图尺寸和校验值；AI 需已持有相同原图。恢复编辑时须同时选择原图。';
+    $('export-hint').textContent=mode==='file'&&hasHost()?'「复制 JSON 与图片」会先把 JSON 与配套原图保存到导出目录，再把这几个文件复制到剪贴板（粘贴后为独立附件）；不会下载 ZIP。重新导入时同时选择 JSON 和配套图片。':mode==='file'?'下载 ZIP 包含 JSON 与配套原图。复制 JSON 后还需同时交付引用的图片；重新导入时可选择 ZIP，或同时选择 JSON 和配套图片。':mode==='embedded'?'预览已折叠图片编码；文件交付无损保留完整原图；复制 JSON 内容按独立选项处理。':'JSON 仅记录原图尺寸和校验值；AI 需已持有相同原图。恢复编辑时须同时选择原图。';
     if(isSet())$('export-hint').textContent=summary.annotatedPageCount+' 个已批注页面将反馈给 AI；其余页面只保留名称索引。';
     if(hasHost()&&mode==='file')$('export-hint').textContent=($('export-hint').textContent+' 保存后会写入原图的绝对路径。').trim();
   }
@@ -713,7 +713,8 @@
     }
   }
   // Save the JSON and its companion image into the export folder first, then put
-  // the same files on the clipboard (the host writes JSON text + image bitmap).
+  // the same files on the clipboard as a file list (JSON first, then images), like
+  // the upstream desktop edition. The host falls back to JSON text + image bitmap.
   function copyJsonFiles(options={}) {
     const main=!!options.main;
     if(hasHost()){
@@ -721,12 +722,14 @@
         const files=await collectExportFiles();
         const r=hostResult(await globalThis.grokbotX.saveFiles({kind:'feedback',files,reveal:main?false:options.reveal!==false}),'保存 JSON 与图片');
         if(!globalThis.grokbotX.copyFiles)throw new Error('文件已保存，但宿主不支持复制到剪贴板');
-        try{hostResult(await globalThis.grokbotX.copyFiles({files:filesWithSavedJson(files,r)}),'复制到剪贴板');}
+        let c;
+        try{c=hostResult(await globalThis.grokbotX.copyFiles({files:filesWithSavedJson(files,r)}),'复制到剪贴板');}
         catch(error){throw new Error('文件已保存'+(r&&r.dir?'到 '+r.dir:'')+'，但'+error.message);}
         applySavedPreview(r);
         const where=r&&r.dir?'，并保存到 '+r.dir:'，并保存到导出目录';
-        notify('已复制 JSON 与图片'+where);
-        if($('export-hint'))$('export-hint').textContent='已复制 JSON 与图片到剪贴板'+where+'（不会回填 Grok Bot）';
+        const what=c&&c.copiedFiles?'已复制 '+c.copiedFiles+' 个文件（JSON 与图片）':'已复制 JSON 文本与图片';
+        notify(what+where);
+        if($('export-hint'))$('export-hint').textContent=(c&&c.copiedFiles?what+'到剪贴板，粘贴后为独立附件':what+'到剪贴板（系统不支持文件剪贴板，粘贴时可能只保留一种）')+where+'（不会回填 Grok Bot）';
       });
       return;
     }

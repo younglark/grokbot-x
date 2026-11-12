@@ -62,6 +62,15 @@ EditHere 的名称、Logo 与品牌元素**不在** PolyForm 授权范围内。�
 
 保存或「复制 JSON 与图片」时，主进程在最终导出目录确定之后，会给每个实际写入的配套原图（`image.mode === "file"`）补上 OS 原生的绝对路径 `image.path`，给已写入的批注预览补上 `image.previewPath`。`file` / `preview` 仍是相对文件名，以保持与上游反馈格式兼容。不携带原图（`mode: "none"`）或内嵌原图（`mode: "embedded"`）时不加路径。「查看 JSON」在保存前的预览里不会出现路径。
 
+### 「复制 JSON 与图片」放进剪贴板的是文件列表（grokbot-x）
+
+上游 Qt 桌面版（`app/editor.cpp` 的 `Editor::copyJson` / `feedbackBundleUrls`）用 `QMimeData::setUrls()` 把「JSON + 配套图片」作为文件 URL 列表放进剪贴板（JSON 在前）。grokbot-x 在主进程 `electron/clipboard-files.mjs` 中做同样的事，只使用本次刚写入导出目录的文件：
+
+- Linux：`clipboard.writeBuffer('text/uri-list', …)`（CRLF 分隔的 file:// URI）。Electron 每次写剪贴板都会清空旧内容，只能提供一种原始格式，所以不再同时放 JSON 文本或 `x-special/gnome-copied-files`。
+- macOS：`osascript -l JavaScript` 调 `NSPasteboard.writeObjects([NSURL…])`（每个文件一个 public.file-url 条目）；失败时退回 `NSFilenamesPboardType` plist。
+- Windows：Windows PowerShell 5.1 `Set-Clipboard -LiteralPath`（CF_HDROP）。
+- 任一方式失败时退回旧行为：JSON 文本 + 图片位图。
+
 ## 构建
 
 ```bash

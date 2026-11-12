@@ -36,10 +36,10 @@
         </ol>
         <div class="help-status" role="status" aria-live="polite"><span class="help-status-dot"></span><p id="help-session-status"></p></div>
         <div class="help-file-guide">
-          <article><h3>${icon('send')}反馈 JSON</h3><p>导出兼容 EditHere 反馈格式的修改意见、坐标与位移。底部工具条右侧直接提供「复制 JSON 内容」「复制 JSON 与图片」；「查看 JSON」可按 Ctrl / ⌘ + E，或在顶栏保存按钮的菜单里选择，菜单里也有「保存项目」。在本应用中，保存会写入状态目录下的导出文件夹（也可点「另存为…」自选位置）；「复制 JSON 与图片」会写入系统剪贴板，而不会反复下载 zip。</p></article>
+          <article><h3>${icon('send')}反馈 JSON</h3><p>导出兼容 EditHere 反馈格式的修改意见、坐标与位移。底部工具条右侧直接提供「复制 JSON 内容」「复制 JSON 与图片」；「查看 JSON」可按 Ctrl / ⌘ + E，或在顶栏保存按钮的菜单里选择，菜单里也有「保存项目」。在本应用中，保存会写入状态目录下的导出文件夹（也可点「另存为…」自选位置）；「复制 JSON 与图片」先把 JSON 与配套原图保存到导出文件夹，再把这些文件（JSON 在前）作为文件列表放进系统剪贴板，粘贴到聊天框或文件管理器里就是独立的几个文件附件，而不会反复下载 zip。</p></article>
           <article><h3>${icon('save')}项目文件</h3><p>保留原图或批注帧、布局与可编辑状态。顶栏保存菜单选「保存项目」后点击主按钮，或点击左下「更多工具」里的「保存项目」备份。下次通过「打开」继续编辑；视频继续播放需重新选择源视频。</p></article>
         </div>
-        <div class="help-callout"><strong>文件保存在哪里？</strong><p>默认保存到本应用状态目录的 <code>features/edithere/exports/&lt;时间戳&gt;/</code>，保存后可点「在文件夹中显示」。勾选「原图嵌入 JSON」后可用单文件交付。「复制 JSON 内容」把 JSON 文本写入剪贴板；「复制 JSON 与图片」同时写入 JSON 文本和图片，并另存一份到导出目录。</p></div>
+        <div class="help-callout"><strong>文件保存在哪里？</strong><p>默认保存到本应用状态目录的 <code>features/edithere/exports/&lt;时间戳&gt;/</code>，保存后可点「在文件夹中显示」。勾选「原图嵌入 JSON」后可用单文件交付。「复制 JSON 内容」把 JSON 文本写入剪贴板；「复制 JSON 与图片」把导出目录里刚保存的 JSON 和原图作为文件复制（与 EditHere 桌面版一致）；若系统不支持文件剪贴板，会退回为 JSON 文本加图片位图。</p></div>
         <p>保存的文件和复制内容包含相同的修改意见。重新导入可打开反馈 ZIP，或同时选择 JSON 与配套图片。本应用不会把反馈回填到 Grok Bot。</p>
         <p class="help-footnote">显示「已保存」只代表文件已写入导出目录。本派生不会向对话回传反馈。</p>
       </section>
