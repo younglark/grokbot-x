@@ -11,6 +11,7 @@ files:
   - features/**/*
   - config/**/*
   - assets/**/*
+  - skills/**/*
   - package.json
   - LICENSE
   - README.md
