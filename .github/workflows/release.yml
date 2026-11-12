@@ -1,0 +1,95 @@
+name: build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci || npm install
+      - run: node packaging/check.mjs
+      - run: node --test tests/
+
+  pack:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            script: dist:linux
+          - os: macos-latest
+            script: dist:mac
+          - os: windows-latest
+            script: dist:win
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci || npm install
+      - name: Self-check the Electron entry
+        shell: bash
+        run: |
+          node packaging/check.mjs
+          if [[ "${{ matrix.os }}" == "ubuntu-latest" ]]; then
+            xvfb-run --auto-servernum -- npx electron . --dry-run
+            xvfb-run --auto-servernum -- npx electron . --help
+          else
+            npx electron . --dry-run
+            npx electron . --help
+          fi
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: Build
+        run: npm run ${{ matrix.script }}
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: Check fuses (Linux unpacked binary)
+        if: matrix.os == 'ubuntu-latest'
+        run: npx @electron/fuses read --app release/linux-unpacked/grokbot-x || npx @electron/fuses read --app "release/linux-unpacked/Grok Bot X"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: grokbot-x-${{ matrix.os }}
+          path: |
+            release/*.deb
+            release/*.AppImage
+            release/*.exe
+            release/*.dmg
+            release/*.zip
+            release/*.yml
+            release/*.blockmap
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: pack
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,32 @@
+{
+  "name": "grokbot-x",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Unofficial Electron add-on for the Grok Bot desktop client (CDP, loopback only)",
+  "license": "MIT",
+  "author": "grokbot-x",
+  "main": "electron/main.mjs",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test tests/*.mjs",
+    "check": "node packaging/check.mjs",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder",
+    "dist:linux": "electron-builder --linux deb AppImage",
+    "dist:win": "electron-builder --win nsis",
+    "dist:mac": "electron-builder --mac dmg zip"
+  },
+  "dependencies": {
+    "ws": "8.22.2"
+  },
+  "devDependencies": {
+    "@electron/fuses": "^1.8.0",
+    "electron": "36.9.5",
+    "electron-builder": "26.0.12"
+  },
+  "allowScripts": {
+    "electron@36.9.5": true,
+    "electron-winstaller@5.4.0": true
+  }
+}

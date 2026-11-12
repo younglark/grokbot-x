@@ -1,19 +1,13 @@
-// features/edithere daemon side: fetch the previewed image and open it in a
-// separate EditHere (web) window running in the user's Chrome/Chromium.
+// features/edithere: capture the previewed image and open it in an in-app
+// EditHere BrowserWindow (custom scheme, no system Chrome, no HTTP server).
 import fs from 'node:fs';
-import http from 'node:http';
 import path from 'node:path';
-import { spawn, execFileSync } from 'node:child_process';
-import { CdpConnection, waitForDevtools, evaluate } from '../../core/cdp.mjs';
-import { freePort } from '../../core/net.mjs';
+import { openEditor, closeEditor } from '../../electron/editor.mjs';
 
 const VIEWER_IMG = `(document.querySelector('.sand-media-viewer') || document).querySelector('img.sand-media-viewer__image')`;
 const ALLOWED_SRC = /^(sand-media|https|blob|file):/i;
 
 const state = {
-  server: null,
-  staticPort: 0,
-  browser: null, // { proc, port, conn }
   responses: new Map(), // sessionId\nurl -> {requestId, mimeType}
   queue: Promise.resolve(),
 };
@@ -118,119 +112,8 @@ async function captureImage(ctx, sessionId, d) {
   throw err;
 }
 
-// ---------- static server for EditHere.html ----------
-function startStatic(ctx) {
-  const root = path.join(ctx.featureDir, 'vendor');
-  const files = { '/EditHere.html': 'EditHere.html' };
-  return new Promise((resolve, reject) => {
-    const srv = http.createServer((req, res) => {
-      const host = String(req.headers.host || '');
-      if (!/^(127\.0\.0\.1|localhost)(:\d+)?$/.test(host)) { res.writeHead(403).end(); return; }
-      const p = new URL(req.url, 'http://127.0.0.1').pathname;
-      const f = files[p];
-      if (!f) { res.writeHead(404).end(); return; }
-      fs.readFile(path.join(root, f), (err, buf) => {
-        if (err) { res.writeHead(500).end(); return; }
-        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(buf);
-      });
-    });
-    srv.on('error', reject);
-    freePort(Number(ctx.config.staticPort) || 0).then((port) => {
-      srv.listen(port, '127.0.0.1', () => { state.server = srv; state.staticPort = port; resolve(port); });
-    }, reject);
-  });
-}
-
-// ---------- browser window ----------
-function findBrowser(ctx) {
-  const wanted = [ctx.config.browser, process.env.GROKBOT_X_BROWSER, 'google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser']
-    .filter(Boolean);
-  for (const c of wanted) {
-    if (c.includes('/')) { if (fs.existsSync(c)) return c; continue; }
-    try { return execFileSync('sh', ['-c', `command -v "$1"`, 'sh', c], { encoding: 'utf8' }).trim(); } catch { /* next */ }
-  }
-  return null;
-}
-
-function notifyNoBrowser(ctx) {
-  const msg = '没有找到 Google Chrome 或 Chromium，EditHere 窗口无法打开。\n请安装 google-chrome-stable 或 chromium，或在 ~/.config/grokbot-x/config.json 里设置 features.edithere.browser。';
-  ctx.log.error(msg.replace(/\n/g, ' '));
-  try { spawn('zenity', ['--error', '--title=grokbot-x', `--text=${msg}`], { stdio: 'ignore', detached: true }).unref(); } catch { /* no zenity */ }
-}
-
-async function ensureBrowser(ctx) {
-  const b = state.browser;
-  if (b && b.proc.exitCode == null && b.conn?.open) return b;
-  if (b && b.proc.exitCode == null) {
-    try {
-      const ver = await waitForDevtools(b.port, 3000);
-      b.conn = await new CdpConnection(ver.webSocketDebuggerUrl).connect();
-      return b;
-    } catch { try { b.proc.kill(); } catch { /* ignore */ } }
-  }
-  const bin = findBrowser(ctx);
-  if (!bin) { notifyNoBrowser(ctx); throw new Error('no Chrome/Chromium found'); }
-  const port = await freePort(Number(ctx.config.browserCdpPort) || 0);
-  const profile = path.join(ctx.stateDir, 'browser-profile');
-  fs.mkdirSync(profile, { recursive: true, mode: 0o700 });
-  const args = [
-    `--user-data-dir=${profile}`,
-    `--remote-debugging-port=${port}`,
-    '--remote-debugging-address=127.0.0.1',
-    '--no-first-run', '--no-default-browser-check', '--disable-sync', '--password-store=basic',
-    '--window-size=1280,860',
-    `--app=http://127.0.0.1:${state.staticPort}/EditHere.html`,
-  ];
-  if (process.getuid?.() === 0) args.push('--no-sandbox');
-  ctx.log.info(`starting EditHere window with ${bin} (devtools 127.0.0.1:${port})`);
-  const logFd = fs.openSync(path.join(ctx.stateDir, 'browser.log'), 'a');
-  const proc = spawn(bin, args, { stdio: ['ignore', logFd, logFd], env: process.env });
-  fs.closeSync(logFd);
-  proc.on('exit', (code) => {
-    ctx.log.info(`EditHere window closed (code ${code})`);
-    if (state.browser?.proc === proc) { state.browser.conn?.close(); state.browser = null; }
-  });
-  const ver = await waitForDevtools(port, 20000);
-  state.browser = { proc, port, conn: await new CdpConnection(ver.webSocketDebuggerUrl).connect() };
-  return state.browser;
-}
-
-async function editorSession(b) {
-  const want = `127.0.0.1:${state.staticPort}/EditHere.html`;
-  for (let i = 0; i < 60; i++) {
-    const { targetInfos } = await b.conn.send('Target.getTargets');
-    const t = targetInfos.find((x) => x.type === 'page' && x.url.includes(want));
-    if (t) {
-      const { sessionId } = await b.conn.send('Target.attachToTarget', { targetId: t.targetId, flatten: true });
-      return { sessionId, targetId: t.targetId };
-    }
-    await new Promise((r) => setTimeout(r, 250));
-  }
-  // window exists but the editor tab is gone: open a fresh one
-  const { targetId } = await b.conn.send('Target.createTarget', { url: `http://${want}` });
-  const { sessionId } = await b.conn.send('Target.attachToTarget', { targetId, flatten: true });
-  return { sessionId, targetId };
-}
-
 async function openInEditor(ctx, dataUrl, name) {
-  const b = await ensureBrowser(ctx);
-  let { sessionId, targetId } = await editorSession(b);
-  const ready = `new Promise((res) => { const t0 = Date.now(); (function poll() {
-    if (document.readyState === 'complete' && window.EditHereWeb) return res(true);
-    if (Date.now() - t0 > 15000) return res(false); setTimeout(poll, 100); })(); })`;
-  if (!(await evaluate(b.conn, sessionId, ready, { awaitPromise: true }))) throw new Error('EditHere page did not become ready');
-  // EditHere accepts one image per page; reload the editor when it already holds one.
-  const busy = await evaluate(b.conn, sessionId, `!document.getElementById('workspace')?.hidden`);
-  if (busy) {
-    await b.conn.send('Page.enable', {}, sessionId);
-    await b.conn.send('Page.reload', { ignoreCache: true }, sessionId);
-    await new Promise((r) => setTimeout(r, 500));
-    if (!(await evaluate(b.conn, sessionId, ready, { awaitPromise: true }))) throw new Error('EditHere reload failed');
-  }
-  await evaluate(b.conn, sessionId,
-    `EditHereWeb.loadAgentImage({ image: ${JSON.stringify(dataUrl)}, name: ${JSON.stringify(name)} }).then(() => true)`,
-    { awaitPromise: true, timeoutMs: 60000 });
-  await b.conn.send('Target.activateTarget', { targetId }).catch(() => {});
+  await openEditor({ dataUrl, name });
 }
 
 function stamp() {
@@ -268,8 +151,7 @@ export default {
 
   async init(ctx) {
     if (!fs.existsSync(path.join(ctx.featureDir, 'vendor', 'EditHere.html'))) throw new Error('vendor/EditHere.html missing');
-    const port = await startStatic(ctx);
-    ctx.log.info(`EditHere page served on http://127.0.0.1:${port}/EditHere.html`);
+    ctx.log.info('EditHere will open in an in-app BrowserWindow (gx-edithere://)');
   },
 
   async onAttach(ctx, { sessionId }) {
@@ -298,10 +180,6 @@ export default {
   },
 
   async shutdown() {
-    state.server?.close();
-    if (state.browser) {
-      state.browser.conn?.close();
-      try { state.browser.proc.kill('SIGTERM'); } catch { /* ignore */ }
-    }
+    try { closeEditor(); } catch { /* ignore */ }
   },
 };

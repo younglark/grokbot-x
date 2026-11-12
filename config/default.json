@@ -1,12 +1,12 @@
 {
   "cdpPort": 29229,
   "reconnectGraceSeconds": 30,
+  "launcher": {
+    "openAtLogin": false
+  },
   "features": {
     "edithere": {
       "enabled": true,
-      "staticPort": 0,
-      "browserCdpPort": 0,
-      "browser": "",
       "saveImages": true
     }
   }

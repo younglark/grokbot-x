@@ -1,86 +1,107 @@
 # grokbot-x
 
-Grok Bot 桌面端的非官方增强启动器。**不修改官方客户端**：以 `--remote-debugging-port`（只绑 127.0.0.1）启动官方 Grok Bot，再由用户级守护进程通过 Chrome DevTools Protocol（CDP）注入功能。
+Grok Bot 桌面端的非官方 Electron 增强。**不修改官方客户端**：以 `--remote-debugging-port`（只绑 127.0.0.1）启动或挂接官方 Grok Bot，再由本应用通过 Chrome DevTools Protocol（CDP）注入功能。
 
-第一个功能 **edithere**：在图片预览窗口的「下载」按钮左边加一个「✎ 编辑」按钮，点击后在独立的 Chrome/Chromium 窗口里打开 [EditHere](https://github.com/Inginnng/EditHere) 网页版，并自动载入这张原图。
+第一个功能 **edithere**：在图片预览窗口的「下载」按钮左边加一个「✎ 编辑」按钮，点击后在 **本应用内的窗口** 打开 [EditHere](https://github.com/Inginnng/EditHere) 网页版，并自动载入这张原图。不再调用系统 Chrome。
 
-> ⚠️ EditHere 采用 **PolyForm Noncommercial 1.0.0**，**仅限非商业使用**。商业用途需取得作者书面授权（inginnng@163.com）。EditHere 名称与标识不在授权范围内。许可原文见 `/opt/grokbot-x/features/edithere/vendor/LICENSE` 和 `NOTICE`。
+> ⚠️ EditHere 采用 **PolyForm Noncommercial 1.0.0**，**仅限非商业使用**。商业用途需取得作者书面授权（inginnng@163.com）。EditHere 名称与标识不在授权范围内。许可原文见应用内 `features/edithere/vendor/LICENSE` 和 `NOTICE`。
+
+本项目与 Grok Bot 官方无关，也不受官方支持。
 
 ## 安装
 
-```bash
-sudo apt install ./grokbot-x_0.1.0_amd64.deb
-```
+从 [Releases](https://github.com/younglark/grokbot-x/releases) 下载对应平台的包：
 
-依赖：bash、procps、coreutils。推荐：`google-chrome-stable` 或 `chromium`（EditHere 窗口用），`zenity`（对话框）。安装包自带 Node.js 22 运行时和 ws，不需要系统 Node。
+| 平台 | 包 |
+|---|---|
+| Linux x64 | `.deb` 或 `.AppImage` |
+| Windows x64 | `*-setup.exe`（NSIS） |
+| macOS arm64 / x64 | `.dmg` 或 `.zip`（**未签名**） |
 
-## 卸载
+- Linux：`sudo apt install ./grokbot-x_*_amd64.deb`，或给 AppImage 加上执行权限后运行。
+- Windows：运行安装器。SmartScreen 可能提示未知发布者，请从本仓库的 Releases 下载。
+- macOS：**未签名**。首次打开请右键点「打开」，或执行 `xattr -dr com.apple.quarantine "/Applications/Grok Bot X.app"`。
 
-```bash
-grokbot-x-stop            # 先停守护进程
-sudo apt remove grokbot-x
-rm -rf ~/.local/state/grokbot-x ~/.config/grokbot-x   # 可选：删运行数据和配置
-```
+可选依赖：Linux 上的托盘图标通常需要 `libappindicator` / `ayatana-appindicator`。没有托盘时应用仍会在后台挂接已开启调试口的 Grok Bot。
 
 ## 使用
 
-- 从应用菜单打开「Grok Bot X」，或在终端运行 `grokbot-x`。
-- 打开对话里的图片预览，点下载按钮左边的「✎ 编辑」，就会弹出 EditHere 窗口。再点其他图片会复用同一个窗口。
-- 停止增强（Grok Bot 不受影响）：`grokbot-x-stop`，或桌面菜单里的「停止 grokbot-x 增强」。Grok Bot 退出后，守护进程也会自动退出。
+1. 先安装官方 [Grok Bot](https://cursor.com) 桌面端。
+2. 启动「Grok Bot X」。若 Grok Bot 已在运行且已带本机调试口，会直接挂接、不重启；否则请用托盘菜单里的「启动 Grok Bot（带调试口）」。若 Grok Bot 已在运行但没有调试口，会先征得同意再重启。
+3. 打开对话里的图片预览，点下载按钮左边的「✎ 编辑」，会弹出内置的 EditHere 窗口。再点其他图片会复用同一个窗口。
+4. 托盘菜单还可以开关功能、打开日志目录、设置（默认关闭的）开机启动，以及退出。退出本应用不会关闭 Grok Bot。
 
-启动器的行为：
-
-1. 依次查找官方客户端：`GROK_BOT_BIN` → `/opt/Grok Bot/grok-bot` → `/opt/grok-bot/grok-bot` → `/usr/bin/grok-bot` → `~/Applications/*grok*bot*.AppImage` → `~/.config/grokbot-x/launcher.conf` 里的 `GROK_BOT_BIN`。
-2. Grok Bot 已在运行、并且已经开了 127.0.0.1 调试口：直接挂上，不重启。
-3. 已在运行但没开调试口：弹窗询问，同意后才重启（没有 zenity 就在终端里问；没有终端就放弃）。
-4. 没在运行：带 `--remote-debugging-port=<端口> --remote-debugging-address=127.0.0.1` 启动。`chrome-sandbox` 不是 setuid root、用户命名空间也不可用时（或者是 AppImage），才加 `--no-sandbox`。
-5. 启动守护进程（用户级后台进程，不装 systemd 服务）。
-
-### 配置
-
-`~/.config/grokbot-x/launcher.conf`（shell 格式，环境变量优先）：
+也可以在终端里运行：
 
 ```bash
-GROK_BOT_BIN="/path/to/grok-bot"
-GROK_BOT_CDP_PORT=29229            # 默认 29229；被占用时自动往后找空闲端口
-GROK_BOT_USER_DATA_DIR=""          # 留空 = 正常用户数据；设置后同时导出 SAND_USER_DATA_DIR，做隔离
-GROK_BOT_EXTRA_ARGS=""
+GROK_BOT_BIN=/path/to/grok-bot GROK_BOT_CDP_PORT=29229 grokbot-x
 ```
 
-`~/.config/grokbot-x/config.json`（覆盖 `/opt/grokbot-x/config/default.json`）：
+`GROK_BOT_USER_DATA_DIR` 若设置，会同时导出 `SAND_USER_DATA_DIR`，用来隔离官方客户端的数据目录。正式使用请留空，沿用官方默认目录。
+
+停止：托盘「退出」，或 `touch ~/.local/state/grokbot-x/stop.request`（macOS 为 `~/Library/Application Support/grokbot-x/stop.request`，Windows 为 `%LOCALAPPDATA%\grokbot-x\stop.request`）。
+
+## 配置
+
+`config.json` 位置：
+
+- Linux：`~/.config/grokbot-x/config.json`
+- macOS：`~/Library/Application Support/grokbot-x/config.json`
+- Windows：`%APPDATA%\grokbot-x\config.json`
 
 ```json
-{ "features": { "edithere": { "enabled": true, "browser": "", "staticPort": 0, "browserCdpPort": 0, "saveImages": true } } }
+{
+  "cdpPort": 29229,
+  "launcher": { "openAtLogin": false, "grokBotBin": "", "userDataDir": "" },
+  "features": { "edithere": { "enabled": true, "saveImages": true } }
+}
 ```
 
-端口填 `0` 表示自动选空闲端口。也可以用环境变量临时禁用某个功能：`GROKBOT_X_DISABLE=edithere`。
+环境变量优先：`GROK_BOT_BIN`、`GROK_BOT_CDP_PORT`、`GROK_BOT_USER_DATA_DIR`、`GROKBOT_X_DISABLE=edithere`。
 
-### 运行数据
+运行数据（日志、pid、按需保存的原图）在：
 
-`~/.local/state/grokbot-x/`：`daemon.log`、`grokbot-x.log`、`grok-bot.log`、`daemon.pid`；`features/edithere/` 下有 EditHere 浏览器的独立 profile（`browser-profile/`）、`browser.log`，以及点击时取到的原图（`images/`，`saveImages:false` 可以关掉）。
+- Linux：`~/.local/state/grokbot-x/`
+- macOS：`~/Library/Application Support/grokbot-x/`
+- Windows：`%LOCALAPPDATA%\grokbot-x\`
 
-## 架构（插件化）
+## 架构
 
 ```
-core/daemon.mjs        内核：读配置、连 CDP、发现 target、注入、binding 消息路由
-core/page-runtime.js   页面运行时：window.__grokbotX.send(feature, type, data)
+electron/main.mjs      Electron 主进程：单实例、托盘、生命周期
+electron/client.mjs    查找 / 挂接 / 经同意后重启官方客户端
+electron/editor.mjs    内置 EditHere 窗口（自定义协议 gx-edithere://）
+core/kernel.mjs        CDP 连接、target 发现、注入、binding 消息路由
+core/platform.mjs      路径、进程、对话框等平台差异
 features/<name>/
-  feature.mjs          daemon 端：{ name, messageTypes, pageScript, init, onAttach, onCdpEvent, onMessage, shutdown }
-  inject.js            页面端片段（包在独立作用域里，拿到 gx = window.__grokbotX）
+  feature.mjs          { name, messageTypes, pageScript, init, onAttach, onCdpEvent, onMessage, shutdown }
+  inject.js            页面脚本（独立作用域，gx = window.__grokbotX）
 ```
 
-页面通过 CDP binding `__grokbotXBridge` 发 `{v:1, feature, type, data}`。内核会校验：功能是否启用、`type` 是否在该功能的 `messageTypes` 白名单里、消息不超过 64 KB；通过后才交给对应功能。加新功能就是新建 `features/<name>/`，不用改内核。
+页面通过 CDP binding 发送 `{v:1, feature, type, data}`。内核会校验功能是否启用、`type` 是否在白名单里、消息是否超过 64 KB。
+
+官方 Win / macOS 客户端的静态分析结果见 [docs/official-clients.md](docs/official-clients.md)。
 
 ## 风险
 
-- **CDP 端口 = 完全控制客户端。** 运行期间，本机任何进程都能通过 127.0.0.1 的调试口读写 Grok Bot 的页面、会话和登录态。只在你信任的单用户机器上使用；端口不要转发出去，也不要绑到 0.0.0.0。
-- **官方升级可能打断功能。** 注入依赖 `.sand-media-viewer__download` 等页面结构，官方改版后按钮可能不再出现。找不到下载按钮时不会显示「编辑」，不影响官方功能本身。
-- **页面里的脚本也能调用 binding。** 内核只接受白名单消息；edithere 只接受 `sand-media:`、`https:`、`blob:`、`file:` 图片地址，并且只读当前预览里的那张图。
-- **许可证。** grokbot-x 自己的代码是 MIT。EditHere 是 PolyForm Noncommercial，仅限非商业使用。Node.js、ws 各自遵循自己的许可证（包内都有）。
-- 本项目与 Grok Bot 官方无关，也不受官方支持。
+- **CDP 端口 = 完全控制客户端。** 运行期间，本机任何进程都可以通过 127.0.0.1 的调试口读写 Grok Bot 的页面、会话和登录态。只在你信任的单用户机器上使用；端口不要转发出去，也不要绑到 0.0.0.0。
+- **官方升级可能打断功能。** 注入依赖 `.sand-media-viewer__download` 等页面结构，官方改版后按钮可能不再出现。找不到下载按钮时不会显示「编辑」。
+- **许可证。** grokbot-x 自己的代码是 MIT。EditHere 是 PolyForm Noncommercial，仅限非商业使用。Electron、Node.js、ws 遵循各自许可证。
+- 本应用的 Electron 已关闭 `RunAsNode` 与 `EnableNodeCliInspectArguments`，并打开 asar 完整性校验。这只约束 grokbot-x 自身，不会改官方客户端。
 
-## 构建
+## 从源码构建
 
 ```bash
-packaging/build-deb.sh     # 产出 release/grokbot-x_<版本>_amd64.deb（Node/ws 按固定版本下载并校验 SHA-256）
+npm install
+npm test
+npm run start              # 开发
+packaging/build-all.sh     # 当前平台的安装包
 ```
+
+产物在 `release/`。macOS 包需要在 macOS 上构建；Linux 上构建 Windows 安装器需要 Wine，否则由 GitHub Actions 的 Windows runner 产出。打 `v*` 标签才会发布 Release。
+
+官方客户端的默认查找路径：
+
+- Linux：`/opt/Grok Bot/grok-bot`、`/usr/bin/grok-bot`、`~/Applications/*grok*bot*.AppImage`
+- macOS：`/Applications/Grok Bot.app`、`~/Applications/Grok Bot.app`
+- Windows：`%LOCALAPPDATA%\Programs\Grok Bot\Grok Bot.exe`、`%ProgramFiles%\Grok Bot\Grok Bot.exe`

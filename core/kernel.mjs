@@ -1,74 +1,32 @@
-#!/usr/bin/env node
 /**
- * grokbot-x kernel.
- *  - connects to the Grok Bot DevTools endpoint on 127.0.0.1
- *  - discovers page targets (auto-attach + periodic scan)
- *  - injects the page runtime and every enabled feature's page script
- *  - routes binding messages {feature,type,data} to the feature's daemon handler
- *    after checking the feature is enabled and the type is whitelisted
- *  - exits when the watched Grok Bot process exits
- *
- * The kernel never reads cookies, storage, or page content. Features receive a
- * narrow context and must keep DOM access scoped to their own UI.
+ * grokbot-x kernel: CDP attach, injection, and feature-message routing.
+ * Used by the Electron main process. Never reads cookies, storage, or page content.
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { EventEmitter } from 'node:events';
+import { pathToFileURL } from 'node:url';
 import { CdpConnection, devtoolsVersion, evaluate } from './cdp.mjs';
 import { createLogger, safeUrl } from './log.mjs';
+import { APP_DIR } from './config.mjs';
+import { makePlatform } from './platform.mjs';
 
-const APP_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BINDING = '__grokbotXBridge';
 const MAX_MESSAGE_BYTES = 64 * 1024;
-const SCAN_MS = 3000;
+export const SCAN_MS = 3000;
 const log = createLogger('core');
 
-// ---------- args / config ----------
-function parseArgs(argv) {
-  const out = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (!a.startsWith('--')) continue;
-    const [k, v] = a.includes('=') ? a.slice(2).split(/=(.*)/s) : [a.slice(2), argv[i + 1]?.startsWith('--') ? 'true' : argv[++i]];
-    out[k] = v ?? 'true';
-  }
-  return out;
-}
-
-function readJson(file) {
-  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) {
-    if (e.code !== 'ENOENT') log.warn(`ignoring unreadable config ${file}: ${e.message}`);
-    return null;
-  }
-}
-
-function deepMerge(a, b) {
-  if (!b || typeof b !== 'object' || Array.isArray(b)) return b === undefined ? a : b;
-  const out = { ...(a && typeof a === 'object' ? a : {}) };
-  for (const [k, v] of Object.entries(b)) out[k] = deepMerge(out[k], v);
-  return out;
-}
-
-function loadConfig(args) {
-  const home = process.env.HOME || '/tmp';
-  const configHome = process.env.XDG_CONFIG_HOME || path.join(home, '.config');
-  const userFile = args.config || process.env.GROKBOT_X_CONFIG || path.join(configHome, 'grokbot-x', 'config.json');
-  let cfg = readJson(path.join(APP_DIR, 'config', 'default.json')) || {};
-  cfg = deepMerge(cfg, readJson(userFile) || {});
-  for (const name of String(process.env.GROKBOT_X_DISABLE || '').split(',').map((s) => s.trim()).filter(Boolean)) {
-    cfg.features = cfg.features || {};
-    cfg.features[name] = { ...(cfg.features[name] || {}), enabled: false };
-  }
-  return { cfg, userFile };
-}
-
 // ---------- kernel ----------
-class Kernel {
-  constructor({ cdpPort, stateDir, grokPid, cfg }) {
+export class Kernel extends EventEmitter {
+  static BINDING = BINDING;
+
+  constructor({ cdpPort, stateDir, grokPid, cfg, plat }) {
+    super();
     this.cdpPort = cdpPort;
     this.stateDir = stateDir;
     this.grokPid = grokPid;
     this.cfg = cfg;
+    this.plat = plat || makePlatform();
     this.conn = null;
     this.sessions = new Map(); // sessionId -> { targetId, url }
     this.attached = new Set(); // targetIds
@@ -79,6 +37,7 @@ class Kernel {
     this.stopping = false;
     this.reconnectTimer = null;
     this.lostSince = 0;
+    this.scanTimer = null;
   }
 
   async loadFeatures() {
@@ -95,7 +54,7 @@ class Kernel {
         const pageScript = mod.pageScript ? fs.readFileSync(path.join(dir, name, mod.pageScript), 'utf8') : '';
         const ctx = this.makeContext(name, fcfg, path.join(dir, name));
         if (mod.init) await mod.init(ctx);
-        this.features.set(name, { mod, ctx, types: new Set(mod.messageTypes), pageScript });
+        this.features.set(name, { mod, ctx, types: new Set(mod.messageTypes), pageScript, enabled: fcfg.enabled !== false });
         log.info(`feature ${name}: enabled (messages: ${mod.messageTypes.join(', ') || 'none'})`);
       } catch (e) {
         log.error(`feature ${name}: failed to load: ${e.message}`);
@@ -118,6 +77,7 @@ class Kernel {
       cdp: (method, params, sessionId, timeoutMs) => this.conn.send(method, params, sessionId, timeoutMs),
       evaluate: (sessionId, expr, opts) => evaluate(this.conn, sessionId, expr, opts),
       safeUrl,
+      platform: this.plat,
     };
   }
 
@@ -125,7 +85,7 @@ class Kernel {
   bundledPageSource() {
     const parts = [this.pageRuntime];
     for (const [name, f] of this.features) {
-      if (!f.pageScript) continue;
+      if (!f.pageScript || f.enabled === false) continue;
       parts.push(`;(function(gx){try{if(!gx||!gx.register(${JSON.stringify(name)}))return;\n${f.pageScript}\n}catch(e){}})(window.__grokbotX);`);
     }
     return parts.join('\n');
@@ -135,7 +95,9 @@ class Kernel {
     const ver = await devtoolsVersion(this.cdpPort);
     this.conn = new CdpConnection(ver.webSocketDebuggerUrl);
     await this.conn.connect();
+    this.emit('connecting');
     log.info(`connected to Grok Bot DevTools 127.0.0.1:${this.cdpPort} (${ver.Browser || 'unknown'})`);
+    this.emit('connected', { port: this.cdpPort, browser: ver.Browser });
     this.lostSince = 0;
     this.conn.onEvent((m) => this.onEvent(m));
     this.conn.onClose(() => {
@@ -158,11 +120,18 @@ class Kernel {
       this.reconnectTimer = null;
       const graceMs = (this.cfg.reconnectGraceSeconds ?? 30) * 1000;
       if (this.lostSince && Date.now() - this.lostSince > graceMs) {
-        log.warn('Grok Bot DevTools unreachable past grace period; exiting');
-        return this.shutdown(0);
+        log.warn('Grok Bot DevTools unreachable past grace period');
+        this.emit('disconnected', { reason: 'timeout' });
+        return;
       }
       try { await this.connect(); } catch (e) { log.warn(`reconnect failed: ${e.message}`); this.scheduleReconnect(); }
     }, 2000);
+  }
+
+  startScanning() {
+    if (this.scanTimer) return;
+    this.scanTimer = setInterval(() => this.scan().catch(() => {}), SCAN_MS);
+    this.scanTimer.unref?.();
   }
 
   async settle() {
@@ -250,7 +219,7 @@ class Kernel {
       return;
     }
     const f = this.features.get(msg.feature);
-    if (!f) { log.warn(`rejected message: feature "${msg.feature.slice(0, 40)}" not enabled`); return; }
+    if (!f || f.enabled === false) { log.warn(`rejected message: feature "${msg.feature.slice(0, 40)}" not enabled`); return; }
     if (!f.types.has(msg.type)) { log.warn(`rejected message: ${msg.feature}/${msg.type.slice(0, 40)} not whitelisted`); return; }
     try {
       await f.mod.onMessage(f.ctx, { sessionId, type: msg.type, data: msg.data });
@@ -272,12 +241,25 @@ class Kernel {
     return out;
   }
 
+  watchStopRequest() {
+    const f = path.join(this.stateDir, 'stop.request');
+    try { fs.unlinkSync(f); } catch { /* none */ }
+    setInterval(() => {
+      if (fs.existsSync(f)) {
+        try { fs.unlinkSync(f); } catch { /* ignore */ }
+        log.info('stop requested');
+        this.shutdown(0);
+      }
+    }, 500).unref();
+  }
+
   watchGrok() {
     if (!this.grokPid) return;
     setInterval(() => {
       try { process.kill(this.grokPid, 0); } catch {
-        log.info(`Grok Bot process ${this.grokPid} exited; stopping`);
-        this.shutdown(0);
+        log.info(`Grok Bot process ${this.grokPid} exited`);
+        this.grokPid = 0;
+        this.emit('client-exited');
       }
     }, 2000).unref();
   }
@@ -285,6 +267,8 @@ class Kernel {
   async shutdown(code = 0) {
     if (this.stopping) return;
     this.stopping = true;
+    if (this.scanTimer) { clearInterval(this.scanTimer); this.scanTimer = null; }
+    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
     for (const f of this.features.values()) {
       try { await f.mod.shutdown?.(f.ctx); } catch (e) { f.ctx.log.warn(`shutdown: ${e.message}`); }
     }
@@ -292,44 +276,24 @@ class Kernel {
     try {
       if (Number(fs.readFileSync(this.pidFile, 'utf8')) === process.pid) fs.unlinkSync(this.pidFile);
     } catch { /* ignore */ }
-    log.info('daemon stopped (Grok Bot left running)');
-    process.exit(code);
+    log.info('kernel stopped (Grok Bot left running)');
+    this.emit('stopped');
+  }
+
+  get connected() { return !!this.conn?.open; }
+
+  async setFeatureEnabled(name, enabled) {
+    this.cfg.features = this.cfg.features || {};
+    this.cfg.features[name] = { ...(this.cfg.features[name] || {}), enabled };
+    const f = this.features.get(name);
+    if (f) f.enabled = enabled;
+    if (!enabled && this.conn?.open) {
+      const expr = `document.querySelectorAll('[data-grokbotx-feature="${name}"]').forEach((n)=>n.remove())`;
+      for (const sid of this.sessions.keys()) {
+        try { await evaluate(this.conn, sid, expr); } catch { /* ignore */ }
+      }
+    }
+    this.emit('features-changed');
   }
 }
 
-async function main() {
-  const args = parseArgs(process.argv.slice(2));
-  const { cfg, userFile } = loadConfig(args);
-  const home = process.env.HOME || '/tmp';
-  const stateDir = args['state-dir'] || process.env.GROKBOT_X_STATE_DIR ||
-    path.join(process.env.XDG_STATE_HOME || path.join(home, '.local', 'state'), 'grokbot-x');
-  const cdpPort = Number(args['cdp-port'] || process.env.GROK_BOT_CDP_PORT || cfg.cdpPort);
-  if (!Number.isInteger(cdpPort) || cdpPort < 1 || cdpPort > 65535) throw new Error('missing or invalid --cdp-port');
-  fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
-
-  const pidFile = path.join(stateDir, 'daemon.pid');
-  try {
-    const old = Number(fs.readFileSync(pidFile, 'utf8'));
-    if (old && old !== process.pid) { process.kill(old, 0); log.error(`already running (pid ${old})`); process.exit(3); }
-  } catch { /* not running */ }
-  fs.writeFileSync(pidFile, String(process.pid));
-
-  const k = new Kernel({ cdpPort, stateDir, grokPid: Number(args['grok-pid']) || 0, cfg });
-  k.pidFile = pidFile;
-  process.on('SIGINT', () => k.shutdown(0));
-  process.on('SIGTERM', () => k.shutdown(0));
-  process.on('unhandledRejection', (e) => log.warn(`unhandledRejection: ${e?.message || e}`));
-  log.info(`grokbot-x daemon pid=${process.pid} cdp=127.0.0.1:${cdpPort} state=${stateDir} config=${userFile}`);
-  await k.loadFeatures();
-  await k.connect();
-  k.watchGrok();
-  setInterval(() => k.scan(), SCAN_MS).unref();
-  setInterval(() => {}, 1 << 30); // keep alive
-  const st = await k.status();
-  log.info(`ready; ${st.length} page(s): ${JSON.stringify(st)}`);
-}
-
-main().catch((e) => {
-  log.error(`fatal: ${e.message}`);
-  process.exit(1);
-});

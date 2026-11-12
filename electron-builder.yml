@@ -1,0 +1,75 @@
+appId: io.github.younglark.grokbot-x
+productName: Grok Bot X
+executableName: grokbot-x
+copyright: Copyright 2026 grokbot-x authors
+directories:
+  output: release
+  buildResources: assets
+files:
+  - electron/**/*
+  - core/**/*
+  - features/**/*
+  - config/**/*
+  - assets/**/*
+  - package.json
+  - LICENSE
+  - README.md
+  - THIRD-PARTY-NOTICES.md
+asar: true
+extraMetadata:
+  main: electron/main.mjs
+electronFuses:
+  runAsNode: false
+  enableCookieEncryption: true
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+  enableEmbeddedAsarIntegrityValidation: true
+  onlyLoadAppFromAsar: true
+  grantFileProtocolExtraPrivileges: false
+linux:
+  category: Utility
+  icon: assets
+  maintainer: grokbot-x <grokbot-x@localhost>
+  synopsis: "Unofficial add-on for the Grok Bot desktop client"
+  description: "Attaches to official Grok Bot over a loopback DevTools port. EditHere is PolyForm Noncommercial (noncommercial use only)."
+  desktop:
+    entry:
+      Name: Grok Bot X
+      Comment: Start Grok Bot with grokbot-x add-ons
+      Categories: Utility
+      Type: Application
+  target:
+    - target: deb
+      arch: [x64]
+    - target: AppImage
+      arch: [x64]
+  artifactName: grokbot-x-${version}-linux-${arch}.${ext}
+win:
+  icon: assets/grokbot-x.ico
+  target:
+    - target: nsis
+      arch: [x64]
+  artifactName: grokbot-x-${version}-win-${arch}.${ext}
+  signAndEditExecutable: false
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Grok Bot X
+  license: LICENSE
+  artifactName: grokbot-x-${version}-win-${arch}-setup.${ext}
+mac:
+  icon: assets/grokbot-x.icns
+  identity: null
+  hardenedRuntime: false
+  gatekeeperAssess: false
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+    - target: zip
+      arch: [arm64, x64]
+  artifactName: grokbot-x-${version}-mac-${arch}.${ext]
+  category: public.app-category.utilities
+dmg:
+  artifactName: grokbot-x-${version}-mac-${arch}.${ext}
