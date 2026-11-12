@@ -439,14 +439,11 @@ body:is([data-header-density="compact"],[data-header-density="icons"]) .header-a
 body:is([data-header-density="compact"],[data-header-density="icons"]) #open { width:28px;min-width:28px;padding:0; }
 body:is([data-header-density="compact"],[data-header-density="icons"]) #open span { display:none; }
 body:is([data-header-density="compact"],[data-header-density="icons"]) .header-actions .button { font-size:11px;gap:4px; }
-body[data-header-density="compact"] #export { padding:7px; }
 body:is([data-header-density="compact"],[data-header-density="icons"]) .header-actions .icon { width:16px;height:16px; }
 body:is([data-header-density="compact"],[data-header-density="icons"]) .header .view-controls button { min-width:26px; }
 body:is([data-header-density="compact"],[data-header-density="icons"]) .header .view-controls .icon-button { width:26px; }
 body:is([data-header-density="compact"],[data-header-density="icons"]) .header .view-controls :is(#zoom-in,#zoom-out) { width:20px;min-width:20px; }
 body:is([data-header-density="compact"],[data-header-density="icons"]) .header .view-controls .separator { margin:0 1px; }
-body[data-header-density="icons"] #export { width:30px;min-width:30px;padding:0; }
-body:is([data-header-density="icons"],[data-header-density="tight"]) #export span { display:none; }
 body:is([data-header-density="icons"],[data-header-density="tight"]) .header-actions>.separator { display:none; }
 body[data-header-density="tight"] .header { gap:2px; }
 body[data-header-density="tight"] .brand { padding:0 4px; }

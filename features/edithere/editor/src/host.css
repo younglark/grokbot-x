@@ -42,3 +42,59 @@
 @media (max-width: 720px) {
   .host-bar { left: 10px; right: 10px; max-width: calc(100% - 20px); }
 }
+
+/* Desktop-style export actions (复制 JSON 内容 / 复制 JSON 与图片) on the right
+ * of the bottom tool bar. The bar sizes to its content (instead of the 50%
+ * shrink-to-fit width an absolutely positioned box gets from left:50%) and
+ * wraps the export group onto a second row only when upstream's max-width is hit. */
+.tools {
+  width: max-content;
+  flex-wrap: wrap;
+  align-content: center;
+  justify-content: center;
+  row-gap: 4px;
+}
+.tools[data-export-wrapped="true"] .export-divider { display: none; }
+.tools .export-tools { gap: 4px; flex-wrap: wrap; justify-content: center; }
+.tools .export-tools .export-action {
+  flex-direction: row;
+  height: 32px;
+  min-width: 0;
+  padding: 0 6px;
+  gap: 0;
+  font-size: 11px;
+  font-weight: 550;
+  border-radius: 8px;
+  border: 1px solid var(--line, #d8dee6);
+  background: var(--surface, #fff);
+  color: var(--text, inherit);
+}
+.tools .export-tools .export-action:hover:not(:disabled) { background: var(--pale, #eef3ff); }
+.tools .export-tools .export-action.primary {
+  background: #2f67dc;
+  border-color: #2f67dc;
+  color: #fff;
+  box-shadow: 0 2px 5px #2f67dc21;
+}
+.tools .export-tools .export-action.primary:hover:not(:disabled) { background: #245ac9; }
+.tools .export-tools .export-action:disabled { opacity: .45; cursor: default; }
+/* Placement is upstream's: centered on the canvas area (left:50%, or
+ * (100% - 296px)/2 while the 修改意见 sidebar is open). Only the width is changed
+ * above, so the bar is not squeezed to the 50% shrink-to-fit width.
+ * Safety clamp (650px and wider): if the centered bar would reach the
+ * bottom-left utility dock, push its center right just far enough to clear it.
+ * host.js publishes --gx-dock-right and --gx-tools-width; at 1280px the clamp
+ * is inactive and the bar stays exactly centered. */
+@media (min-width: 650px) and (min-height: 431px) {
+  .tools, body[data-inspector-open="true"] .tools { left: max(50%, calc(var(--gx-dock-right, 0px) + 4px + var(--gx-tools-width, 0px) / 2)); }
+}
+@media (min-width: 900px) and (min-aspect-ratio: 6/5) and (min-height: 431px) {
+  body[data-inspector-open="true"] .tools { left: max(calc((100% - 296px) / 2), calc(var(--gx-dock-right, 0px) + 4px + var(--gx-tools-width, 0px) / 2)); }
+}
+@media (max-width: 899px), (max-aspect-ratio: 6/5) {
+  .tools .export-tools .export-action { height: 30px; padding: 0 8px; font-size: 11px; }
+}
+@media (max-width: 580px) {
+  .tools .export-divider { display: none; }
+  .tools .export-tools .export-action { height: 28px; padding: 0 6px; font-size: 10.5px; }
+}

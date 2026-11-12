@@ -103,7 +103,7 @@
     panX=at.x-(at.x-panX)*factor;panY=at.y-(at.y-panY)*factor;zoom=next;fitMode=false;resizeStage();
   }
   function changeMode(value) {if(drag)cancelDrag();mode=value;hover=null;hoveredMovement=null;selectedNote=null;document.querySelectorAll('[data-mode]').forEach(b=>{b.classList.toggle('active',b.dataset.mode===mode);b.setAttribute('aria-pressed',String(b.dataset.mode===mode));});stage.style.cursor=spaceDown||mode==='pan'?'grab':mode==='select'?'default':'crosshair';$('hint').textContent=({select:doc?.layout?'拖动或八向缩放 · Ctrl / ⌘ 多选 · 组件上滚轮缩放':'拖动批注调整位置 · 点击编号编辑文字',smart:'悬停选块 · 滚轮切换大小 · 拖动手动框选',point:'点一下，精确指向一个像素',rect:'拖出范围，写下修改意见',cut:'拖出组件范围，再拖动或缩放',pan:'拖动自由画布 · 滚轮缩放 · 0 适应画面'})[mode];render();}
-  function activate() {annotationsVisible=true;syncAnnotationVisibility();endExplosion();explodeEnabled=!!doc?.layout;$('empty').hidden=true;$('workspace').hidden=false;$('save-project').disabled=false;$('save-json').disabled=false;$('export').disabled=false;updateMediaMeta();canvas.width=session.width;canvas.height=session.height;$('overlay').setAttribute('viewBox',`0 0 ${session.width} ${session.height}`);$('video-controls').hidden=session.kind!=='video';$('set-bar').hidden=session.kind!=='set';$('group-note').hidden=session.kind!=='set';document.body.dataset.mediaKind=session.kind;selected=null;selectedNote=null;hover=null;dirty=false;changeMode('smart');refresh();viewportFit();if(doc?.notes.length)globalThis.EditHereChrome?.revealNote(null);}
+  function activate() {annotationsVisible=true;syncAnnotationVisibility();endExplosion();explodeEnabled=!!doc?.layout;$('empty').hidden=true;$('workspace').hidden=false;$('save-project').disabled=false;$('save-json').disabled=false;for(const id of ['copy-json-main','copy-files-main'])$(id).disabled=false;updateMediaMeta();canvas.width=session.width;canvas.height=session.height;$('overlay').setAttribute('viewBox',`0 0 ${session.width} ${session.height}`);$('video-controls').hidden=session.kind!=='video';$('set-bar').hidden=session.kind!=='set';$('group-note').hidden=session.kind!=='set';document.body.dataset.mediaKind=session.kind;selected=null;selectedNote=null;hover=null;dirty=false;changeMode('smart');refresh();viewportFit();if(doc?.notes.length)globalThis.EditHereChrome?.revealNote(null);}
   function releaseVideo() {if(frameCallback!==null&&video.cancelVideoFrameCallback)video.cancelVideoFrameCallback(frameCallback);frameCallback=null;video.pause();video.removeAttribute('src');video.load();if(mediaURL)URL.revokeObjectURL(mediaURL);mediaURL=null;presentedTime=null;linkSignature=null;seeking=false;}
   function replaceOK() {if(agentBound&&session){notify('当前素材由 AI 批注会话传入；完成或取消后再打开其他素材');return false;}return !dirty||confirm('当前编辑还没有保存。要替换素材吗？可先取消并保存项目。');}
   async function imageDocFromFile(file,source='file') {const url=URL.createObjectURL(file);try{const image=new Image();image.src=url;await image.decode();sizeOK(image.naturalWidth,image.naturalHeight);const c=makeCanvas(image.naturalWidth,image.naturalHeight);c.getContext('2d').drawImage(image,0,0);const data=c.toDataURL('image/png'),decoded=await decode(data);return makeDoc(decoded,data,null,uid(),captureAt(source,file.name));}finally{URL.revokeObjectURL(url);}}
@@ -596,7 +596,7 @@
   }
   function jsonBlob(data) {return new Blob([JSON.stringify(data,null,2)],{type:'application/json'});}
   const baseName = () => (session?.name||'图片批注').replace(/\.[^.]+$/,'').replace(/[\\/:*?"<>|\u0000-\u001f]/g,'-');
-  const saveModes={file:{label:'复制 JSON 与图片',icon:'#i-download'},content:{label:'复制 JSON 内容',icon:'#i-json-copy-text'},project:{label:'保存项目',icon:'#i-save'},view:{label:'查看 JSON 文件',icon:'#i-json'}};
+  const saveModes={file:{label:'复制 JSON 与图片',icon:'#i-download'},content:{label:'复制 JSON 内容',icon:'#i-json-copy-text'},project:{label:'保存项目',icon:'#i-save'},view:{label:'查看 JSON',icon:'#i-json'}};
   const preference=(key,fallback)=>{try{return localStorage.getItem('edithere.'+key)??fallback;}catch{return fallback;}};
   const rememberPreference=(key,value)=>{try{localStorage.setItem('edithere.'+key,value);}catch{/* This view still remembers its selection when host storage is unavailable. */}};
   let saveMode=preference('saveMode','file');if(!saveModes[saveMode])saveMode='file';
@@ -626,7 +626,7 @@
     const summary=exportCache.summary,size=bytes=>bytes<1024?bytes+' B':bytes<1024*1024?(bytes/1024).toFixed(1)+' KB':(bytes/1024/1024).toFixed(2)+' MB';
     $('json-summary').textContent=summary.schemaVersion+' · '+(isSet()?summary.annotatedPageCount+' / '+summary.pageCount+' 个页面 · ':'')+summary.annotations+' 条意见 · '+summary.movements+' 次位移 · '+size(summary.bytes)+(summary.imageBytes?'（图片 '+size(summary.imageBytes)+'）':'')+(summary.recognizedTexts?' · '+summary.recognizedTexts+' 处截图文字（仅作为数据）':'');
     $('download-json').textContent='复制 JSON 与图片';
-    $('export-hint').textContent=mode==='file'?'下载 ZIP 包含 JSON 与配套原图。复制 JSON 后还需同时交付引用的图片；重新导入时可选择 ZIP，或同时选择 JSON 和配套图片。':mode==='embedded'?'预览已折叠图片编码；文件交付无损保留完整原图；复制 JSON 内容按独立选项处理。':'JSON 仅记录原图尺寸和校验值；AI 需已持有相同原图。恢复编辑时须同时选择原图。';
+    $('export-hint').textContent=mode==='file'&&hasHost()?'「复制 JSON 与图片」会先把 JSON 与配套原图保存到导出目录，再复制到剪贴板；不会下载 ZIP。重新导入时同时选择 JSON 和配套图片。':mode==='file'?'下载 ZIP 包含 JSON 与配套原图。复制 JSON 后还需同时交付引用的图片；重新导入时可选择 ZIP，或同时选择 JSON 和配套图片。':mode==='embedded'?'预览已折叠图片编码；文件交付无损保留完整原图；复制 JSON 内容按独立选项处理。':'JSON 仅记录原图尺寸和校验值；AI 需已持有相同原图。恢复编辑时须同时选择原图。';
     if(isSet())$('export-hint').textContent=summary.annotatedPageCount+' 个已批注页面将反馈给 AI；其余页面只保留名称索引。';
   }
   function openExport() {try{closeSaveOptions();refreshExport();if(!$('export-dialog').open)$('export-dialog').showModal();}catch(error){notify(error.message);}}
@@ -664,29 +664,56 @@
     for(const option of menu.querySelectorAll('[data-copy-image]'))option.onclick=()=>{copyTextImage=option.dataset.copyImage;rememberPreference('copyTextImage',copyTextImage);updateCopyOptions();closeCopyOptions();toggle.focus();};
     menu.onkeydown=event=>{const options=[...menu.querySelectorAll('[data-copy-image]')],at=options.indexOf(document.activeElement);if(event.key==='Escape'){event.preventDefault();closeCopyOptions(true);}else if(['ArrowDown','ArrowUp','Home','End'].includes(event.key)){event.preventDefault();options[event.key==='Home'?0:event.key==='End'?options.length-1:(at+(event.key==='ArrowDown'?1:-1)+options.length)%options.length].focus();}else if(event.key==='Tab')closeCopyOptions();};
   }
-  async function copyJson() {
-    const complete=F.serialize(feedback(copyTextImage,false));
+  // Host IPC handlers return {ok:false,error} instead of throwing; surface that as an error.
+  function hostResult(r,what) {if(r&&r.ok===false&&!r.cancelled)throw new Error(what+'失败：'+(r.error||'未知原因'));return r;}
+  // options.main: invoked from the main-page bottom bar. Never opens a dialog or
+  // falls back to a download; success and failure are reported with a toast only.
+  async function copyJson(options={}) {
+    const main=!!options.main,complete=F.serialize(feedback(copyTextImage,false)),withImage=copyTextImage==='embedded';
     if(hasHost()&&globalThis.grokbotX.copyText){
-      await globalThis.grokbotX.copyText({text:complete});
+      hostResult(await globalThis.grokbotX.copyText({text:complete}),'复制 JSON 内容');
+      let saved=null;
       try{
         const files=[encodeHostFile(baseName()+'-feedback.json',complete)];
-        await globalThis.grokbotX.saveFiles({kind:'feedback',files,reveal:false});
-      }catch(error){notify(error.message);}
-      $('export-hint').textContent=copyTextImage==='embedded'?'JSON 文本已复制到剪贴板（含原图）并已保存到导出目录':'JSON 文本已复制到剪贴板并已保存到导出目录（默认不含原图）';
-      notify(copyTextImage==='embedded'?'JSON 内容已复制并保存，包含原图':'JSON 内容已复制并保存，不携带原图信息');
+        saved=hostResult(await globalThis.grokbotX.saveFiles({kind:'feedback',files,reveal:false}),'保存 JSON');
+      }catch(error){notify('已复制 JSON 内容，但'+error.message);return;}
+      $('export-hint').textContent=(withImage?'JSON 文本已复制到剪贴板（含原图）':'JSON 文本已复制到剪贴板（默认不含原图）')+(saved&&saved.dir?'，副本已保存到 '+saved.dir:'，副本已保存到导出目录');
+      notify(withImage?'已复制 JSON 内容（含原图）':'已复制 JSON 内容（不含原图）');
       return;
     }
-    try{await navigator.clipboard.writeText(complete);$('export-hint').textContent=copyTextImage==='embedded'?'JSON 文本已复制，包含完整原图':'JSON 文本已复制，默认不携带原图信息；请同时提供相同原图';notify(copyTextImage==='embedded'?'JSON 内容已复制，包含原图':'JSON 内容已复制，不携带原图信息');}
-    catch{openExport();$('json-preview').value=complete;$('json-preview').focus();$('json-preview').select();$('export-hint').textContent='剪贴板不可用。请按 Ctrl+C / ⌘C 复制选中的完整 JSON';}
+    try{await navigator.clipboard.writeText(complete);$('export-hint').textContent=withImage?'JSON 文本已复制，包含完整原图':'JSON 文本已复制，默认不携带原图信息；请同时提供相同原图';notify(withImage?'已复制 JSON 内容（含原图）':'已复制 JSON 内容（不含原图）');}
+    catch(error){
+      if(main){notify('复制 JSON 内容失败：'+(error?.message||'剪贴板不可用'));return;}
+      openExport();$('json-preview').value=complete;$('json-preview').focus();$('json-preview').select();$('export-hint').textContent='剪贴板不可用。请按 Ctrl+C / ⌘C 复制选中的完整 JSON';
+    }
   }
-  function copyJsonFiles() {
+  // Save the JSON and its companion image into the export folder first, then put
+  // the same files on the clipboard (the host writes JSON text + image bitmap).
+  function copyJsonFiles(options={}) {
+    const main=!!options.main;
     if(hasHost()){
       run(async()=>{
         const files=await collectExportFiles();
-        if(globalThis.grokbotX.copyFiles)await globalThis.grokbotX.copyFiles({files});
-        const r=await globalThis.grokbotX.saveFiles({kind:'feedback',files,reveal:true});
-        hostNotify(r,'已复制到剪贴板并保存到导出目录');
-        if($('export-hint'))$('export-hint').textContent=(r&&r.dir?('已复制 JSON 与图片到剪贴板，并保存到 '+r.dir):'已复制 JSON 与图片到剪贴板并保存到导出目录')+'（不会重复下载 zip）';
+        const r=hostResult(await globalThis.grokbotX.saveFiles({kind:'feedback',files,reveal:main?false:options.reveal!==false}),'保存 JSON 与图片');
+        if(!globalThis.grokbotX.copyFiles)throw new Error('文件已保存，但宿主不支持复制到剪贴板');
+        try{hostResult(await globalThis.grokbotX.copyFiles({files}),'复制到剪贴板');}
+        catch(error){throw new Error('文件已保存'+(r&&r.dir?'到 '+r.dir:'')+'，但'+error.message);}
+        const where=r&&r.dir?'，并保存到 '+r.dir:'，并保存到导出目录';
+        notify('已复制 JSON 与图片'+where);
+        if($('export-hint'))$('export-hint').textContent='已复制 JSON 与图片到剪贴板'+where+'（不会回填 Grok Bot）';
+      });
+      return;
+    }
+    if(main){
+      // Plain browser: try a single clipboard item with JSON text and the original image.
+      run(async()=>{
+        refreshExport();
+        if(!navigator.clipboard?.write||typeof ClipboardItem==='undefined')throw new Error('复制 JSON 与图片失败：当前环境不支持剪贴板写入');
+        const item={'text/plain':new Blob([exportText],{type:'text/plain'})};
+        if(session.kind==='image'&&session.document?.data){const c=makeCanvas(session.document.image.naturalWidth,session.document.image.naturalHeight);c.getContext('2d').drawImage(session.document.image,0,0);const png=await new Promise(resolve=>c.toBlob(resolve,'image/png'));if(png)item['image/png']=png;}
+        try{await navigator.clipboard.write([new ClipboardItem(item)]);}
+        catch(error){throw new Error('复制 JSON 与图片失败：'+(error?.message||'剪贴板不可用'));}
+        notify(item['image/png']?'已复制 JSON 与图片':'已复制 JSON 内容（当前素材没有可复制的单张原图）');
       });
       return;
     }
@@ -722,12 +749,13 @@
   window.addEventListener('resize',placeSaveOptions);
   document.addEventListener('pointerdown',event=>{if(!event.target.closest('.save-control,#save-options'))closeSaveOptions();if(!event.target.closest('.copy-text-control,.copy-options,#copy-content-options-toggle'))closeCopyOptions();});
   document.addEventListener('keydown',event=>{if(event.key==='Escape'){closeSaveOptions();closeCopyOptions();}});
-  $('export').onclick=openExport;
+  $('copy-json-main').onclick=()=>run(()=>copyJson({main:true}));
+  $('copy-files-main').onclick=()=>copyJsonFiles({main:true});
   $('embed-image').onchange=()=>{rememberPreference('embedImage',String($('embed-image').checked));refreshExport();};
   $('preview').onclick=()=>run(async()=>{if(!doc)throw new Error('请先在当前画面添加批注');const c=annotatedCanvas(doc),blob=await new Promise(resolve=>c.toBlob(resolve,'image/png'));if(!blob)throw new Error('无法保存图片');download(baseName()+(session.kind==='video'?'-'+doc.timestampUs:'')+'-annotations.png',blob);});
   $('include-recognized-text').onchange=()=>{rememberPreference('includeRecognizedText',String($('include-recognized-text').checked));refreshExport();};
   $('download-json').onclick=()=>{chooseSaveMode('file');copyJsonFiles();};
-  $('copy-json').onclick=()=>{chooseSaveMode('content');copyJson();};
+  $('copy-json').onclick=()=>{chooseSaveMode('content');run(()=>copyJson());};
   function serializedDoc(d) {return {id:d.id,timestampUs:d.timestampUs,image:d.data,notes:clone(d.notes),layout:clone(d.layout),...(d.capture?{capture:clone(d.capture)}:{}),...(d.name?{name:d.name}:{})};}
   function project() {const base={schemaVersion:'edithere-web-project-1',tool:'EditHere Web',savedAt:new Date().toISOString(),kind:session.kind,name:session.name,width:session.width,height:session.height};if(session.kind==='set')return {...base,pages:session.pages.map(page=>({...serializedDoc(page),width:page.image.naturalWidth,height:page.image.naturalHeight})),groupNotes:clone(session.groupNotes)};return {...base,...(session.kind==='image'?{document:serializedDoc(session.document)}:{video:clone(session.video),signature:clone(session.signature),...(session.capture?{capture:clone(session.capture)}:{}),frames:session.frames.filter(hasContent).map(serializedDoc)})};}
   $('save-project').onclick=()=>{try{download(baseName()+'.edithere-web.json',jsonBlob(project()));dirty=false;notify(isSet()?'已发起项目下载，包含全部页面、整组意见和组件布局':session.kind==='video'?'已发起项目下载；重开后重新选择源视频即可继续播放':'已发起项目下载，包含原图、批注和组件布局');}catch(error){notify(error.message);}};
@@ -982,12 +1010,12 @@
   document.addEventListener('keydown',event=>{
     if(event.target.closest('textarea,input,dialog'))return;
     const ctrl=event.ctrlKey||event.metaKey,key=event.key.toLowerCase();
-    if(document.body.dataset.agentLocked==='true'){if(ctrl&&key==='s'){event.preventDefault();$(event.shiftKey?'save-project':'save-json').click();}else if(ctrl&&key==='e'){event.preventDefault();$('export').click();}return;}
+    if(document.body.dataset.agentLocked==='true'){if(ctrl&&key==='s'){event.preventDefault();$(event.shiftKey?'save-project':'save-json').click();}else if(ctrl&&key==='e'){event.preventDefault();openExport();}return;}
     if(busy){if(ctrl&&['o','s','e','z','y'].includes(key)||['v','b','p','r','c','h','0','1','+','=','-','escape','delete','backspace','arrowleft','arrowright','arrowup','arrowdown',' '].includes(key))event.preventDefault();return;}
     if(ctrl&&key==='o'){event.preventDefault();$('open').click();return;}if(!session)return;
     if(isSet()&&(event.key==='['||event.key===']')&&!ctrl){event.preventDefault();stepPage(event.key===']'?1:-1);return;}
     if(ctrl&&key==='s'){event.preventDefault();$(event.shiftKey?'save-project':'save-json').click();return;}
-    if(ctrl&&key==='e'){event.preventDefault();$('export').click();return;}
+    if(ctrl&&key==='e'){event.preventDefault();openExport();return;}
     if(ctrl&&(key==='z'||key==='y')){event.preventDefault();travelHistory(key==='y'||event.shiftKey?'redo':'undo');return;}
     if(key==='0'){event.preventDefault();viewportFit();return;}if(key==='1'&&!ctrl){event.preventDefault();setZoom(1);return;}
     if(event.key==='Escape'){event.preventDefault();cancelDrag();finishPan();selected=null;selectedNote=null;hover=null;hoveredMovement=null;refresh();return;}

@@ -89,6 +89,22 @@ test('validateFilesPayload rejects path traversal, bad kind, bad mime, empty and
   assert.equal(validateFilesPayload({ files: [okFile, { ...okFile }] }).ok, false);
 });
 
+test('bottom tool bar carries only the two copy actions', () => {
+  const html = fs.readFileSync(built, 'utf8');
+  assert.doesNotMatch(html, /id="export"/, 'header 导出反馈 button must be gone');
+  assert.doesNotMatch(html, /导出反馈<\/span>/);
+  const tools = html.slice(html.indexOf('class="tools surface"'), html.indexOf('id="video-controls"'));
+  const ids = [...tools.matchAll(/<button id="([\w-]+)" class="export-action[^"]*"([^>]*)>([^<]+)</g)];
+  assert.deepEqual(ids.map((m) => m[1]), ['copy-json-main', 'copy-files-main']);
+  assert.deepEqual(ids.map((m) => m[3]), ['复制 JSON 内容', '复制 JSON 与图片']);
+  assert.match(tools, /id="copy-files-main" class="export-action primary"/);
+  assert.doesNotMatch(tools, /id="(view-json|copy-annotated)"/);
+  assert.ok(tools.indexOf('id="redo"') < tools.indexOf('id="copy-json-main"'), 'export actions follow undo/redo');
+  // 查看 JSON stays reachable through the dialog (Ctrl/Cmd+E and the save menu).
+  assert.match(html, /<h2>查看 JSON<\/h2>/);
+  assert.match(html, /data-save-mode="view"/);
+});
+
 test('validateCopyText and validateCopyFiles', () => {
   assert.equal(validateCopyText({ text: '{"a":1}' }).ok, true);
   assert.equal(validateCopyText({ text: 1 }).ok, false);

@@ -59,6 +59,27 @@
     hooks.saveFeedback?.({ pickLocation: true });
   });
 
+  // Hide the divider before the export actions when they wrap onto their own row,
+  // and publish sizes for the dock-clearance clamp.
+  const tools = document.querySelector('.tools');
+  const exportTools = tools?.querySelector('.export-tools');
+  if (tools && exportTools && typeof ResizeObserver === 'function') {
+    const root = document.documentElement.style;
+    const dock = document.querySelector('.utility-dock');
+    const syncWrap = () => {
+      const first = tools.querySelector('.tool-group');
+      tools.dataset.exportWrapped = String(!!first && exportTools.offsetTop >= first.offsetTop + first.offsetHeight);
+      // Inputs for the dock-clearance clamp in host.css.
+      root.setProperty('--gx-tools-width', tools.offsetWidth + 'px');
+      root.setProperty('--gx-dock-right', (dock ? Math.ceil(dock.getBoundingClientRect().right) : 0) + 'px');
+    };
+    const observer = new ResizeObserver(syncWrap);
+    observer.observe(tools);
+    if (dock) observer.observe(dock);
+    addEventListener('resize', syncWrap);
+    syncWrap();
+  }
+
   if (host?.onImage) host.onImage((payload) => {
     loadImage(payload).catch((e) => globalThis.EditHereWeb?.notify?.(e.message || String(e)));
   });

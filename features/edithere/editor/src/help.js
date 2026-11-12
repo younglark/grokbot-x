@@ -36,7 +36,7 @@
         </ol>
         <div class="help-status" role="status" aria-live="polite"><span class="help-status-dot"></span><p id="help-session-status"></p></div>
         <div class="help-file-guide">
-          <article><h3>${icon('send')}反馈 JSON</h3><p>导出兼容 EditHere 反馈格式的修改意见、坐标与位移。展开顶栏保存按钮，选择「复制 JSON 与图片」「复制 JSON 内容」「保存项目」或「查看 JSON 文件」。在本应用中，保存会写入状态目录下的导出文件夹（也可点「另存为…」自选位置）；「复制 JSON 与图片」会写入系统剪贴板，而不会反复下载 zip。</p></article>
+          <article><h3>${icon('send')}反馈 JSON</h3><p>导出兼容 EditHere 反馈格式的修改意见、坐标与位移。底部工具条右侧直接提供「复制 JSON 内容」「复制 JSON 与图片」；「查看 JSON」可按 Ctrl / ⌘ + E，或在顶栏保存按钮的菜单里选择，菜单里也有「保存项目」。在本应用中，保存会写入状态目录下的导出文件夹（也可点「另存为…」自选位置）；「复制 JSON 与图片」会写入系统剪贴板，而不会反复下载 zip。</p></article>
           <article><h3>${icon('save')}项目文件</h3><p>保留原图或批注帧、布局与可编辑状态。顶栏保存菜单选「保存项目」后点击主按钮，或点击左下「更多工具」里的「保存项目」备份。下次通过「打开」继续编辑；视频继续播放需重新选择源视频。</p></article>
         </div>
         <div class="help-callout"><strong>文件保存在哪里？</strong><p>默认保存到本应用状态目录的 <code>features/edithere/exports/&lt;时间戳&gt;/</code>，保存后可点「在文件夹中显示」。勾选「原图嵌入 JSON」后可用单文件交付。「复制 JSON 内容」把 JSON 文本写入剪贴板；「复制 JSON 与图片」同时写入 JSON 文本和图片，并另存一份到导出目录。</p></div>
@@ -88,7 +88,7 @@
     else if (['failed', 'error'].includes(state.messageState)) message = '反馈已保存，但消息没有确认送达。点「重试发送」，或把 JSON 手动交给 Agent。';
     else if (['unsupported', 'stopped'].includes(state.messageState)) message = '反馈已保存，当前宿主无法发送消息。复制反馈路径或保存 JSON，回到原对话交给 Agent 并说「继续」。';
     else if (state.agentState === 'completed') message = '反馈已经保存。回到对话说「继续」，让 Agent 读取这次反馈。';
-    else if (state.agentState === 'pending') message = document.getElementById('export').textContent.includes('导出')
+    else if (state.agentState === 'pending') message = (document.getElementById('export')?.textContent || '导出').includes('导出')
       ? '当前宿主无法自动保存反馈。完成批注后，保存 JSON 文件或复制 JSON 内容，回到原对话交给 Agent。'
       : '当前处于 Agent 批注会话。完成后点击右上角「反馈」，再回对话查看处理结果。';
     else if (state.agentState === 'loading' || state.imageState === 'loading') message = '图片正在载入，等画面完整显示后再批注。';

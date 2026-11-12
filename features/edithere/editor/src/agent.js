@@ -4,7 +4,9 @@
   const token = new URL(location.href).searchParams.get('agent');
   if (!token || location.protocol !== 'http:' || location.hostname !== '127.0.0.1' || !/^[a-f0-9]{64}$/i.test(token)) return;
   const $ = id => document.getElementById(id), app = globalThis.EditHereWeb;
+  // grokbot-x removed the header #export button; the localhost agent flow is not used by this fork.
   const submit = $('export'), cancel = $('open');
+  if (!submit || !cancel) return;
   const originalExport = submit.onclick, originalOpen = cancel.onclick;
   let sending = false, pendingFeedback = null;
   app.bindAgent();
