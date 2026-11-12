@@ -11,6 +11,9 @@
     },
     "bot-inspector": {
       "enabled": true
+    },
+    "preview": {
+      "enabled": true
     }
   }
 }

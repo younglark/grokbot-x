@@ -10,6 +10,7 @@ import { updateSupport, attachUpdater } from './updater.mjs';
 import { ensureClient } from './client.mjs';
 import { openOfficialClient, restartOfficialClient, clientMenuItems } from './client-actions.mjs';
 import { registerEditorScheme, handleEditorProtocol, closeEditor, configureEditor, openImageFile, requestSelfTestExport, exportsRoot, showEditor, hasEditorWindow, onEditorChange } from './editor.mjs';
+import { configurePreview, openPreviewFile, pickZipFile, closeAllPreviews, onPreviewChange, feedbackRoot } from './preview.mjs';
 
 registerEditorScheme();
 
@@ -62,7 +63,7 @@ function rebuildMenu() {
   for (const name of names) {
     const on = cfgWrap.cfg.features?.[name]?.enabled !== false;
     features.push({
-      label: name === 'edithere' ? '图片批注（派生自 EditHere）' : name === 'bot-inspector' ? 'Bot 透视' : name,
+      label: name === 'edithere' ? '图片批注（派生自 EditHere）' : name === 'bot-inspector' ? 'Bot 透视' : name === 'preview' ? '交互预览验收' : name,
       type: 'checkbox',
       checked: on,
       click: () => toggleFeature(name, !on),
@@ -80,6 +81,7 @@ function rebuildMenu() {
     { ...restartItem, click: () => { restartOfficial().catch((e) => log.error(`restart Grok Bot failed: ${e.message}`)); } },
     { type: 'separator' },
     { label: '显示图片批注窗口', enabled: hasEditorWindow(), click: () => { showEditor(); } },
+    { label: '打开本地验收 zip…', enabled: previewEnabled(), click: () => { openLocalPreview().catch((e) => notify('交互预览验收', `打不开预览：${e.message}`, true)); } },
     { label: '功能', submenu: features.length ? features : [{ label: '（无）', enabled: false }] },
     {
       label: '开机启动', type: 'checkbox', checked: auto,
@@ -92,6 +94,7 @@ function rebuildMenu() {
     { type: 'separator' },
     { label: '打开日志目录', click: () => shell.openPath(STATE) },
     { label: '打开导出目录', click: () => { const d = exportsRoot(STATE); fs.mkdirSync(d, { recursive: true, mode: 0o700 }); shell.openPath(d); } },
+    { label: '打开验收反馈目录', click: () => { const d = feedbackRoot(STATE); fs.mkdirSync(d, { recursive: true, mode: 0o700 }); shell.openPath(d); } },
     { label: `关于 grokbot-x ${appVersion()}`, click: () => dialog.showMessageBox({ type: 'info', title: 'grokbot-x', message: `grokbot-x ${appVersion()}\n非官方 Grok Bot 增强\n图片批注派生自 EditHere，与原作者无隶属关系\n仅限非商业使用\n调试口仅绑定 127.0.0.1` }) },
     {
       label: '检查更新',
@@ -109,8 +112,21 @@ async function toggleFeature(name, enabled) {
   if (kernel) await kernel.setFeatureEnabled(name, enabled);
   // Disabling 图片批注 is a real close of its (possibly hidden) window.
   if (name === 'edithere' && !enabled) { try { closeEditor(); } catch { /* ignore */ } }
+  if (name === 'preview' && !enabled) { try { closeAllPreviews(); } catch { /* ignore */ } }
   log.info(`feature ${name} ${enabled ? 'enabled' : 'disabled'}`);
   rebuildMenu();
+}
+
+function previewEnabled() {
+  return cfgWrap.cfg.features?.preview?.enabled !== false;
+}
+
+async function openLocalPreview(file) {
+  const p = file || await pickZipFile('');
+  if (!p) return null;
+  const r = await openPreviewFile(p);
+  log.info(`preview opened from local file ${path.basename(p)}`);
+  return r;
 }
 
 function officialUserDataDir() {
@@ -213,6 +229,17 @@ async function maybeOpenTestImage() {
   }
 }
 
+async function maybeOpenPreview() {
+  const file = argValue('--open-preview');
+  if (!file) return;
+  try {
+    await openLocalPreview(file);
+  } catch (e) {
+    notify('打开验收包失败', e.message, true);
+    throw e;
+  }
+}
+
 async function maybeSelfTestExport() {
   try {
     const result = await requestSelfTestExport();
@@ -267,6 +294,7 @@ function unlinkPidIfOurs() {
 async function quitAndInstallUpdate() {
   updaterApi?.markInstalling();
   try { closeEditor({ quitting: true }); } catch { /* ignore */ }
+  try { closeAllPreviews(); } catch { /* ignore */ }
   if (kernel) {
     try { await kernel.shutdown(); } catch { /* ignore */ }
     kernel = null;
@@ -315,11 +343,12 @@ async function startAutoUpdate() {
 
 if (process.argv.includes('--help') || process.argv.includes('-h')) {
   process.stdout.write(`grokbot-x ${appVersion()} (Electron)
-Usage: grokbot-x [--help] [--version] [--dry-run] [--open-image <png>] [--self-test-export]
+Usage: grokbot-x [--help] [--version] [--dry-run] [--open-image <png>] [--open-preview <zip>] [--self-test-export]
   Starts the tray app, attaches to Grok Bot if it already has a loopback DevTools port,
   otherwise wait for the tray action "打开 Grok Bot". DevTools is always bound to 127.0.0.1.
   --open-image FILE   Open the in-app annotation window with a local image (dev / self-test).
   --self-test-export  After the editor is open, save feedback into the exports directory.
+  --open-preview ZIP  Open a local review zip in the isolated 交互预览验收 window (dev / self-test).
 `);
   app.exit(0);
 } else if (process.argv.includes('--version')) {
@@ -334,6 +363,7 @@ Usage: grokbot-x [--help] [--version] [--dry-run] [--open-image <png>] [--self-t
     grokBotBin: plat.findGrokBin(cfgWrap.cfg.launcher?.grokBotBin) || null,
     searched: plat.grokCandidates(cfgWrap.cfg.launcher?.grokBotBin),
     editor: 'in-app BrowserWindow gx-edithere://app/editor.html (forked sources, preload IPC)',
+    preview: 'isolated BrowserWindow + loopback HTTP 127.0.0.1:<random>, sandbox iframe, feedback → clipboard only',
     cdpBind: '127.0.0.1',
   };
   process.stdout.write(JSON.stringify(info, null, 2) + '\n');
@@ -358,6 +388,8 @@ if (!gotLock) {
     configureEditor({ stateDir: STATE, buildDir: editorBuild });
     handleEditorProtocol(editorBuild);
     onEditorChange(() => rebuildMenu());
+    configurePreview({ stateDir: STATE, limits: cfgWrap.cfg.features?.preview });
+    onPreviewChange(() => rebuildMenu());
     const hasTray = tryCreateTray();
     if (!hasTray) log.info('continuing headless: will still attach to Grok Bot');
     // Default off; honour a previously saved preference.
@@ -378,6 +410,7 @@ if (!gotLock) {
     }
     try {
       await maybeOpenTestImage();
+      await maybeOpenPreview();
       if (process.argv.includes('--self-test-export')) await maybeSelfTestExport();
     } catch (e) {
       log.error(`startup editor test failed: ${e.message}`);
@@ -387,10 +420,14 @@ if (!gotLock) {
 }
 
 app.on('window-all-closed', (e) => { e.preventDefault?.(); }); // tray app
-app.on('will-quit', () => { try { closeEditor({ quitting: true }); } catch { /* ignore */ } });
+app.on('will-quit', () => {
+  try { closeEditor({ quitting: true }); } catch { /* ignore */ }
+  try { closeAllPreviews(); } catch { /* ignore */ }
+});
 app.on('before-quit', async (e) => {
   // The editor window hides on ×; destroy it first so it cannot block quit.
   try { closeEditor({ quitting: true }); } catch { /* ignore */ }
+  try { closeAllPreviews(); } catch { /* ignore */ }
   const installing = updaterApi?.isInstalling();
   if (kernel && !kernel.stopping) {
     e.preventDefault();
