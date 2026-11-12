@@ -5,13 +5,17 @@ import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import vm from 'node:vm';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   LIMITS, safeEntryName, resolveInside, listZip, extractZip, detectRoot, parseReview,
   bridgeScript, injectBridge, shellHtml, createPreviewServer, newToken, validateSubmit,
   writeFeedback, clipboardPlan, dirClipboardText, resolveZip, downloadCandidates, newestRecent,
   parseSizeLabel, sizeMatches, normalizeRequest, sanitizeName,
 } from '../electron/preview-core.mjs';
+import {
+  PREVIEW_BYTE_CAP, readBytesExpr, downloadExpr, evalValue, parseReadResult, looksLikeAttachmentPath,
+  localPathOf, rescanDownloads, desktopSources, cancelledError, scrub,
+} from '../features/preview/desktop.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const tmp = (p) => fs.mkdtempSync(path.join(os.tmpdir(), `gx-preview-${p}-`));
@@ -412,7 +416,10 @@ test('feature files: manifest shape, page script uses the kernel bridge, config 
   assert.match(src, /pageScript: 'inject.js'/);
   const page = fs.readFileSync(path.join(root, 'features/preview/inject.js'), 'utf8');
   assert.match(page, /gx\.send\(FEATURE, 'open'/);
-  assert.ok(!/addBinding|gxPreviewOpen|desktop\.|isAnysphereUser/.test(page));
+  assert.ok(!/addBinding|gxPreviewOpen|isAnysphereUser/.test(page));
+  // 页面脚本本身不调官方接口（注释里可以提到），desktop.* 只由主进程经 CDP 调
+  assert.ok(!/desktop\s*\.\s*\w+\s*\(/.test(page.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '')));
+  assert.match(page, /data-gx-preview-req/);
   assert.doesNotThrow(() => new vm.Script(`(function(gx){${page}\n})`));
   const cfg = JSON.parse(fs.readFileSync(path.join(root, 'config/default.json'), 'utf8'));
   assert.equal(cfg.features.preview.enabled, true);
@@ -420,4 +427,167 @@ test('feature files: manifest shape, page script uses the kernel bridge, config 
   assert.match(main, /'交互预览验收'/);
   const server = fs.readFileSync(path.join(root, 'electron/preview-core.mjs'), 'utf8');
   assert.ok(!server.includes('0.0.0.0'));
+});
+
+// ---- 官方 window.desktop.*（用户已允许） ----
+
+/** 模拟 Grok Bot 渲染进程：被点按钮 → 附件卡 fiber → 有 agentId 的祖先 → SandClientProvider（accountSlot getter）。 */
+function fakePage(desktop, { slot = 'slot-1', agentId = 'agent-42', provider = true } = {}) {
+  const calls = [];
+  const spy = {};
+  for (const [k, fn] of Object.entries(desktop)) spy[k] = async (a) => { calls.push({ method: k, args: JSON.parse(JSON.stringify(a)) }); return fn(a); };
+  const client = { desktop: spy };
+  Object.defineProperty(client, 'accountSlot', { get: () => slot, enumerable: true });
+  const root = provider ? { memoizedProps: { value: client, children: null }, return: null } : null;
+  const card = { '__reactFiber$abc': { memoizedProps: { href: '/home/box/a.zip' }, return: { memoizedProps: { entry: { agentId } }, return: { memoizedProps: { value: 1 }, return: root } } } };
+  const btn = { previousElementSibling: card };
+  const document = {
+    querySelector: (sel) => (sel.includes('data-gx-preview-req="r1"') ? btn : null),
+    body: { querySelectorAll: () => [] },
+  };
+  const ctx = { window: { desktop: spy }, document, CSS: { escape: (s) => s }, btoa, Uint8Array, String, Number, Promise, JSON };
+  // returnByValue 等价于 JSON 拷贝
+  return { calls, run: async (expr) => ({ result: { value: JSON.parse(JSON.stringify(await vm.runInNewContext(expr, ctx))) } }) };
+}
+
+test('readBytesExpr passes path, capped maxBytes, agentId and the current accountSlot as viewSlot', async () => {
+  const page = fakePage({ readAttachmentBytes: () => null });
+  const v = evalValue(await page.run(readBytesExpr({ reqId: 'r1', path: '/home/box/out/demo.zip', maxBytes: 999 * 1024 * 1024 })));
+  assert.deepEqual(v, { kind: 'none', slot: true });
+  assert.deepEqual(page.calls[0], { method: 'readAttachmentBytes', args: { path: '/home/box/out/demo.zip', maxBytes: PREVIEW_BYTE_CAP, agentId: 'agent-42', viewSlot: 'slot-1' } });
+  // 没找到 provider：不传 viewSlot（不编造）；找到但为 null：照官方传 null
+  const noProv = fakePage({ readAttachmentBytes: () => null }, { provider: false });
+  await noProv.run(readBytesExpr({ reqId: 'r1', path: '/x.zip' }));
+  assert.equal('viewSlot' in noProv.calls[0].args, false);
+  const nullSlot = fakePage({ readAttachmentBytes: () => null }, { slot: null });
+  await nullSlot.run(readBytesExpr({ reqId: 'r1', path: '/x.zip' }));
+  assert.equal(nullSlot.calls[0].args.viewSlot, null);
+});
+
+test('readBytesExpr results: bytes round-trip as base64, too-large, thrown errors, missing desktop', async () => {
+  const zip = makeZip([{ name: 'index.html', data: 'x'.repeat(100000) }]);
+  const ok = fakePage({ readAttachmentBytes: () => ({ kind: 'bytes', bytes: new Uint8Array(zip), size: zip.length, resolvedName: 'a.zip' }) });
+  const r = parseReadResult(evalValue(await ok.run(readBytesExpr({ reqId: 'r1', path: '/a.zip' }))));
+  assert.equal(r.kind, 'bytes');
+  assert.ok(r.buffer.equals(zip));
+  const big = fakePage({ readAttachmentBytes: () => ({ kind: 'too-large', size: 30e6 }) });
+  assert.deepEqual(parseReadResult(evalValue(await big.run(readBytesExpr({ path: '/a.zip' })))), { kind: 'too-large', size: 30e6 });
+  const boom = fakePage({ readAttachmentBytes: () => { throw Object.assign(new Error('x'), { code: 'ATTACHMENT_READ_ABANDONED' }); } });
+  assert.equal(parseReadResult(evalValue(await boom.run(readBytesExpr({ path: '/a.zip' })))).error, 'ATTACHMENT_READ_ABANDONED');
+  const none = { window: {}, document: {}, CSS: {} };
+  assert.equal((await vm.runInNewContext(readBytesExpr({ path: '/a.zip' }), none)).kind, 'unavailable');
+  assert.equal(parseReadResult({ kind: 'bytes', base64: 'AAAA', size: 7 }).error, 'size mismatch');
+  assert.throws(() => evalValue({ exceptionDetails: { text: 'Uncaught' } }), /Uncaught/);
+});
+
+test('downloadExpr maps true/false and only sends path + suggestedName', async () => {
+  const yes = fakePage({ downloadAttachment: () => true });
+  assert.equal(evalValue(await yes.run(downloadExpr({ path: '/home/box/a.zip', suggestedName: 'a.zip' }))).kind, 'saved');
+  assert.deepEqual(yes.calls[0].args, { path: '/home/box/a.zip', suggestedName: 'a.zip' });
+  const no = fakePage({ downloadAttachment: () => false });
+  assert.equal(evalValue(await no.run(downloadExpr({ path: '/a.zip', suggestedName: 'a.zip' }))).kind, 'cancelled');
+});
+
+test('looksLikeAttachmentPath / localPathOf follow the client path rules', () => {
+  for (const ok of ['/home/box/a.zip', 'C:\\Users\\x\\a.zip', 'd:/a.zip', 'file:///tmp/a.zip']) assert.equal(looksLikeAttachmentPath(ok), true, ok);
+  for (const no of ['https://x/a.zip', 'http://x/a.zip', 'sand-media://image/abc', 'blob:x', 'a.zip', '']) assert.equal(looksLikeAttachmentPath(no), false, no);
+  assert.equal(localPathOf(pathToFileURL('/tmp/a b.zip').href), '/tmp/a b.zip');
+  assert.equal(localPathOf('/home/box/a.zip'), '/home/box/a.zip');
+});
+
+test('rescanDownloads only accepts files written after the download started', () => {
+  const dir = tmp('rescan');
+  const now = Date.now();
+  const at = (n, ms) => { const p = path.join(dir, n); fs.writeFileSync(p, 'z'); fs.utimesSync(p, new Date(ms), new Date(ms)); };
+  at('demo.zip', now - 3600_000); // 旧文件
+  const opts = { since: now - 1000, now, stat: fs.statSync };
+  assert.equal(rescanDownloads(dir, 'demo.zip', opts), null);
+  at('demo (1).zip', now);
+  assert.equal(path.basename(rescanDownloads(dir, 'demo.zip', opts).path), 'demo (1).zip');
+  assert.equal(rescanDownloads(dir, 'demo.zip', { ...opts, now: now + 10 * 60_000 }), null);
+});
+
+function chainDeps(page, { downloads, exists = () => false, clock = Date.now } = {}) {
+  return {
+    evaluate: (expr) => page.run(expr),
+    exists,
+    stat: fs.statSync,
+    readFile: (p) => fs.readFileSync(p),
+    downloadsDir: () => downloads,
+    now: clock,
+    log: { info() {}, warn() {} },
+  };
+}
+
+test('desktop sources: read null → download saved → rescan Downloads finds the zip', async () => {
+  const downloads = tmp('dlok');
+  const zip = makeZip([{ name: 'index.html', data: 'ok' }]);
+  const page = fakePage({
+    readAttachmentBytes: () => null, // zip 因预览类型门禁返回 null
+    downloadAttachment: () => { fs.writeFileSync(path.join(downloads, 'demo-preview.zip'), zip); return true; },
+  });
+  let picked = false;
+  const r = await resolveZip({ name: 'demo-preview.zip', source: '/home/box/out/demo-preview.zip', reqId: 'r1' }, [
+    ...desktopSources(chainDeps(page, { downloads })),
+    { name: 'pick-file', fetch: () => { picked = true; return null; } },
+  ]);
+  assert.equal(r.method, 'desktop-download');
+  assert.ok(r.buffer.equals(zip));
+  assert.deepEqual(r.tried, ['desktop-read:skip', 'desktop-download:ok']);
+  assert.deepEqual(page.calls.map((c) => c.method), ['readAttachmentBytes', 'downloadAttachment']);
+  assert.deepEqual(page.calls[1].args, { path: '/home/box/out/demo-preview.zip', suggestedName: 'demo-preview.zip' });
+  assert.equal(picked, false);
+});
+
+test('desktop sources: readAttachmentBytes bytes are used directly; too-large falls through', async () => {
+  const zip = makeZip([{ name: 'index.html', data: 'b' }]);
+  const direct = fakePage({ readAttachmentBytes: () => ({ kind: 'bytes', bytes: new Uint8Array(zip), size: zip.length }), downloadAttachment: () => true });
+  const r = await resolveZip({ name: 'a.zip', source: '/home/box/a.zip' }, desktopSources(chainDeps(direct, { downloads: tmp('d1') })));
+  assert.equal(r.method, 'desktop-read');
+  assert.equal(direct.calls.length, 1);
+  const big = fakePage({ readAttachmentBytes: () => ({ kind: 'too-large', size: 99e6 }), downloadAttachment: () => false });
+  await assert.rejects(resolveZip({ name: 'a.zip', source: '/home/box/a.zip' }, desktopSources(chainDeps(big, { downloads: tmp('d2') }))),
+    (e) => e.abort === true && e.tried.join() === 'desktop-read:skip,desktop-download:用户取消');
+});
+
+test('desktop sources: user cancels the save dialog → chain stops, our picker never opens', async () => {
+  const page = fakePage({ readAttachmentBytes: () => null, downloadAttachment: () => false });
+  let later = 0;
+  await assert.rejects(resolveZip({ name: 'a.zip', source: '/home/box/a.zip' }, [
+    ...desktopSources(chainDeps(page, { downloads: tmp('d3') })),
+    { name: 'downloads', fetch: () => { later++; return null; } },
+    { name: 'pick-file', fetch: () => { later++; return null; } },
+  ]), /用户取消/);
+  assert.equal(later, 0);
+  assert.equal(cancelledError().abort, true);
+});
+
+test('desktop sources: saved but not in Downloads → falls back to later sources', async () => {
+  const zip = makeZip([{ name: 'index.html', data: 'p' }]);
+  const page = fakePage({ readAttachmentBytes: () => null, downloadAttachment: () => true }); // 用户存到了别处
+  const r = await resolveZip({ name: 'a.zip', source: '/home/box/a.zip' }, [
+    ...desktopSources(chainDeps(page, { downloads: tmp('d4') })),
+    { name: 'pick-file', fetch: () => zip },
+  ]);
+  assert.equal(r.method, 'pick-file');
+  assert.deepEqual(r.tried, ['desktop-read:skip', 'desktop-download:skip', 'pick-file:ok']);
+});
+
+test('desktop sources skip https sources and paths that already exist locally', async () => {
+  const page = fakePage({ readAttachmentBytes: () => { throw new Error('must not call'); }, downloadAttachment: () => { throw new Error('must not call'); } });
+  const srcs = desktopSources(chainDeps(page, { downloads: tmp('d5'), exists: () => true }));
+  assert.equal(await srcs[0].fetch({ name: 'a.zip', source: 'https://example.com/a.zip' }), null);
+  assert.equal(await srcs[1].fetch({ name: 'a.zip', source: 'https://example.com/a.zip' }), null);
+  assert.equal(await srcs[1].fetch({ name: 'a.zip', source: '/home/box/a.zip' }), null);
+  assert.equal(page.calls.length, 0);
+});
+
+test('normalizeRequest keeps a safe reqId only', () => {
+  assert.equal(normalizeRequest({ name: 'a.zip', reqId: 'lz3k9abc12' }).reqId, 'lz3k9abc12');
+  assert.equal(normalizeRequest({ name: 'a.zip', reqId: '"]; alert(1)' }).reqId, '');
+});
+
+test('scrub removes paths from logged client errors', () => {
+  assert.equal(scrub('ENOENT: open /home/box/secret/a.zip failed'), 'ENOENT: open … failed');
+  assert.equal(scrub('bad C:\\Users\\me\\a.zip'), 'bad …');
 });

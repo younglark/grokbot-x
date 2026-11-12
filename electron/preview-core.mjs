@@ -449,7 +449,7 @@ export function dirClipboardText(dir, jsonText) {
 
 // ---------- 取 zip 的来源链 ----------
 
-/** 依次尝试 sources（{ name, fetch(req) → Buffer|null }），返回第一个拿到的。 */
+/** 依次尝试 sources（{ name, fetch(req) → Buffer|null }），返回第一个拿到的；抛出 abort 错误时立即停。 */
 export async function resolveZip(req, sources, { maxBytes = LIMITS.maxZipBytes } = {}) {
   const tried = [];
   for (const s of sources) {
@@ -462,6 +462,8 @@ export async function resolveZip(req, sources, { maxBytes = LIMITS.maxZipBytes }
       return { buffer: buf, method: s.name, tried };
     } catch (e) {
       tried.push(`${s.name}:${String(e?.message || e).slice(0, 80)}`);
+      // e.abort：例如用户在系统保存框里点了取消，后面的来源（含我们自己的文件选择框）都不再跑
+      if (e?.abort) { e.tried = tried; throw e; }
     }
   }
   const err = new Error('拿不到压缩包');
@@ -510,5 +512,6 @@ export function normalizeRequest(d) {
   if (!name || !/\.zip$/i.test(name)) throw new Error('不是 .zip 附件');
   const source = typeof d?.source === 'string' ? d.source.slice(0, 4096) : '';
   const sizeHint = parseSizeLabel(typeof d?.meta === 'string' ? d.meta.slice(0, 200) : '');
-  return { name, source, sizeHint, origin: d?.origin === 'composer' ? 'composer' : 'message' };
+  const reqId = typeof d?.reqId === 'string' && /^[a-z0-9]{1,32}$/i.test(d.reqId) ? d.reqId : '';
+  return { name, source, sizeHint, reqId, origin: d?.origin === 'composer' ? 'composer' : 'message' };
 }

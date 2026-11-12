@@ -1,7 +1,8 @@
 /* features/preview page script. Runs inside (function(gx){...})(window.__grokbotX).
  * 在 .zip 附件卡（消息里的 article.sand-file-card，输入框里的 [data-attachment-card] /
  * .sand-attachment-chip）旁边加一个「打开预览」按钮。只读 DOM 文本和卡片 React props
- * 里的附件来源（href / filePath），不调用客户端 RPC。点击经 gx.send('preview','open') 报给主进程。 */
+ * 里的附件来源（href / filePath），本脚本不调用客户端接口；官方 window.desktop.* 由主进程经
+ * CDP 在用户点击后调用（见 features/preview/desktop.mjs）。点击经 gx.send('preview','open') 报给主进程。 */
 const FEATURE = 'preview';
 const MARK = 'data-grokbotx-feature';
 const CARD_SEL = 'article.sand-file-card, [data-attachment-card], .sand-attachment-chip';
@@ -80,7 +81,10 @@ function makeButton(card, info) {
     if (b.hasAttribute('data-busy')) return;
     const now = zipInfo(card) || info; // React 可能已更新 props
     const origin = card.matches('article.sand-file-card') ? 'message' : 'composer';
-    if (!gx.send(FEATURE, 'open', { name: now.name, source: now.source, meta: now.meta, origin })) return;
+    // 主进程用 reqId 找回这张卡，在页面里读当前账号槽（不经过 binding 传输）
+    const reqId = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    b.setAttribute('data-gx-preview-req', reqId);
+    if (!gx.send(FEATURE, 'open', { name: now.name, source: now.source, meta: now.meta, origin, reqId })) return;
     b.setAttribute('data-busy', '');
     b.textContent = '正在打开…';
     setTimeout(() => { b.removeAttribute('data-busy'); b.textContent = '▶ 打开预览'; }, 2500);
